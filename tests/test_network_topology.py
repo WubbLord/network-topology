@@ -1,0 +1,56 @@
+import numpy as np
+
+from network_topology import compute_network_cost, make_tpu_v4_topology
+from network_topology.cost_model import CollectiveType, NetworkTransfer
+from network_topology.topology import Custom, Mesh3D, Ring, Torus3D
+
+
+def test_make_tpu_v4_topology_selects_expected_topology_class():
+    assert isinstance(make_tpu_v4_topology((4, 4, 4)), Torus3D)
+    assert isinstance(make_tpu_v4_topology((2, 2, 2)), Mesh3D)
+    assert isinstance(make_tpu_v4_topology((4, 4, 4), force_mesh=True), Mesh3D)
+
+
+def test_compute_network_cost_merges_concurrent_link_loads():
+    topo = Custom(
+        adj_matrix=np.array(
+            [
+                [0, 1, 0],
+                [1, 0, 1],
+                [0, 1, 0],
+            ]
+        ),
+        link_bandwidth=10.0,
+        energy_per_bit_per_hop=1.0,
+        per_hop_latency=0.0,
+    )
+    transfers = [
+        NetworkTransfer("long", 10.0, CollectiveType.POINT_TO_POINT, src_chip=0, dst_chips=[2]),
+        NetworkTransfer("short", 10.0, CollectiveType.POINT_TO_POINT, src_chip=0, dst_chips=[1]),
+    ]
+
+    result = compute_network_cost(topo, transfers)
+
+    assert result.total_energy == 240.0
+    assert result.total_latency == 2.0
+    assert result.total_network_bytes == 20.0
+    assert result.energy_per_network_access == 12.0
+    assert result.latency_per_network_access == 0.1
+
+
+def test_reduce_scatter_and_allgather_are_half_of_allreduce_on_ring():
+    topo = Ring(
+        num_chips=4,
+        link_bandwidth=1.0,
+        energy_per_bit_per_hop=1.0,
+        per_hop_latency=0.0,
+    )
+
+    allreduce_energy, allreduce_latency = topo.allreduce_cost(8.0)
+    reduce_scatter_energy, reduce_scatter_latency = topo.reduce_scatter_cost(8.0)
+    allgather_energy, allgather_latency = topo.allgather_cost(8.0)
+
+    assert reduce_scatter_energy == allreduce_energy / 2
+    assert reduce_scatter_latency == allreduce_latency / 2
+    assert allgather_energy == reduce_scatter_energy
+    assert allgather_latency == reduce_scatter_latency

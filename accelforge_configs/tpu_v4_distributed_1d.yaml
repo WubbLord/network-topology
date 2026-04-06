@@ -1,0 +1,98 @@
+# ===========================================================================
+# Distributed TPU v4 — 1D spatial fanout for faster mapping.
+#
+# Same as tpu_v4_distributed.yaml but uses a single spatial dimension
+# for the chip array. This dramatically speeds up the mapper because
+# it reduces the number of spatial loop permutations to explore.
+#
+# The topology model still evaluates the actual 3D topology — the 1D
+# fanout is just an AccelForge mapping optimization trick. The network
+# cost model uses the real topology (torus, mesh, etc.) regardless.
+# ===========================================================================
+
+{% set NUM_CHIPS = NUM_CHIPS | default(64) %}
+{% set NETWORK_READ_ENERGY = NETWORK_READ_ENERGY | default(7.03e-12) %}
+{% set NETWORK_WRITE_ENERGY = NETWORK_WRITE_ENERGY | default(7.03e-12) %}
+{% set NETWORK_READ_LATENCY = NETWORK_READ_LATENCY | default(1.0 / (8.0 * 614e9)) %}
+{% set NETWORK_WRITE_LATENCY = NETWORK_WRITE_LATENCY | default(1.0 / (8.0 * 614e9)) %}
+
+arch:
+  nodes:
+  - !Memory
+    name: NetworkMemory
+    size: inf
+    leak_power: 0
+    area: 0
+    actions:
+    - {name: read, energy: {{NETWORK_READ_ENERGY}}, latency: {{NETWORK_READ_LATENCY}}}
+    - {name: write, energy: {{NETWORK_WRITE_ENERGY}}, latency: {{NETWORK_WRITE_LATENCY}}}
+    tensors: {keep: ~Intermediates, may_keep: All}
+
+  - !Container
+    name: ChipArray
+    spatial:
+    - {name: Chip, fanout: {{NUM_CHIPS}}, may_reuse: All, min_usage: 1}
+
+  - !Memory
+    name: MainMemory
+    size: inf
+    leak_power: 0
+    area: 0
+    actions:
+    - {name: read, energy: 7.03e-12, latency: 1 / (8 * 614e9)}
+    - {name: write, energy: 7.03e-12, latency: 1 / (8 * 614e9)}
+    tensors: {keep: ~Intermediates, may_keep: All}
+
+  - !Memory
+    name: GlobalBuffer
+    size: 1024*1024*128*8
+    total_latency: max(read_latency, write_latency)
+    leak_power: 0
+    area: 112e-6
+    actions:
+    - {name: read, energy: 1.88e-12, latency: 1 / (8 * 2048e9)}
+    - {name: write, energy: 2.36e-12, latency: 1 / (8 * 1024e9)}
+    tensors: {keep: ~MainMemory.tensors, may_keep: All}
+
+  - !Memory
+    name: LocalBuffer
+    spatial: [{name: Z, fanout: 4, may_reuse: Nothing, min_usage: 1}]
+    size: 1024*1024*4*8
+    leak_power: 0
+    area: 50e-6
+    actions:
+    - {name: read, energy: 0.249e-12, latency: 0}
+    - {name: write, energy: 0.293e-12, latency: 0}
+    tensors: {keep: input | output}
+
+  - !Compute
+    name: ScalarUnit
+    area: 10e-6
+    leak_power: 0
+    actions:
+    - {name: compute, energy: 0, latency: 1 / 1.05e9 / 128}
+    enabled: len(All) == 2
+
+  - !Container
+    name: ProcessingElement
+    spatial:
+    - {name: reuse_input, fanout: 128, may_reuse: input, reuse: input, min_usage: 1}
+    - {name: reuse_output, fanout: 128, may_reuse: output, reuse: output, min_usage: 1}
+
+  - !Memory
+    name: Register
+    size: weight.bits_per_value if weight else 0
+    area: 1e-11
+    leak_power: 0
+    actions:
+    - {name: read, energy: 0, latency: 0}
+    - {name: write, energy: 0, latency: 0}
+    tensors: {keep: weight}
+
+  - !Compute
+    name: MAC
+    leak_power: 0
+    area: 9e-11
+    actions:
+    - {name: compute, energy: 0.084e-12, latency: 1 / 1.05e9}
+    enabled: len(All) == 3

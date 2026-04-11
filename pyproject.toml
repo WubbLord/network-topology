@@ -13,8 +13,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# AccelForge integration (install accelforge separately from its repo)
-accelforge = []
+# Optional dependency for the end-to-end workload sweep.
+accelforge = ["accelforge"]
 dev = ["pytest"]
 
 [tool.setuptools.packages.find]

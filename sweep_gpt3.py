@@ -9,10 +9,12 @@ Usage:
 """
 
 import contextlib
+import json
 import logging
 import os
 import sys
 import time
+from datetime import datetime
 from pathlib import Path
 
 logging.disable(logging.WARNING)
@@ -39,6 +41,39 @@ TOPOLOGIES = {
     "Torus 16x2x2": Torus3D(dims=(16, 2, 2), **hw),
     "Ring 64": Ring(num_chips=64, **hw),
 }
+
+
+def _json_ready(value):
+    if isinstance(value, dict):
+        return {str(k): _json_ready(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_json_ready(v) for v in value]
+    if isinstance(value, tuple):
+        return [_json_ready(v) for v in value]
+    if hasattr(value, "item"):
+        return value.item()
+    return value
+
+
+def _serialize_transfer(transfer: NetworkTransfer):
+    return {
+        "tensor_name": transfer.tensor_name,
+        "data_bytes": float(transfer.data_bytes),
+        "collective_type": transfer.collective_type.name,
+        "src_chip": transfer.src_chip,
+        "dst_chips": transfer.dst_chips,
+        "participating_chips": transfer.participating_chips,
+    }
+
+
+def save_results(payload: dict) -> Path:
+    timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
+    out_dir = SCRIPT_DIR / "logs" / timestamp
+    out_dir.mkdir(parents=True, exist_ok=False)
+    out_path = out_dir / "results.json"
+    with out_path.open("w", encoding="utf-8") as f:
+        json.dump(_json_ready(payload), f, indent=2, sort_keys=True)
+    return out_path
 
 def load_accelforge(accelforge_root: Path):
     accelforge_root = accelforge_root.expanduser().resolve()
@@ -115,8 +150,10 @@ def main():
 
     print(f"\n{'Topology':<18s} {'Diam':>5s} {'AvgHop':>7s} {'Degree':>7s} {'BisectBW':>10s}")
     print("-" * 50)
+    topology_summaries = {}
     for tn in TOPOLOGIES:
         s = TOPOLOGIES[tn].summary()
+        topology_summaries[tn] = _json_ready(s)
         print(f"{tn:<18s} {s['diameter']:>5d} {s['avg_hops']:>7.2f} {s['min_degree']:>3d}-{s['max_degree']:<3d} "
               f"{s['bisection_bandwidth_TB_s']:>8.2f} TB/s")
 
@@ -129,7 +166,8 @@ def main():
         except Exception as e:
             print(f"FAILED: {e}")
             continue
-        print(f"done ({time.time() - t0:.0f}s)")
+        elapsed = time.time() - t0
+        print(f"done ({elapsed:.0f}s)")
 
         total_bytes = sum(t.data_bytes for t in transfers)
         bcast_pct = (
@@ -139,16 +177,31 @@ def main():
         )
 
         lats = {}
+        topology_results = {}
         for tn, topo in TOPOLOGIES.items():
             r = compute_network_cost(topo, transfers)
             lats[tn] = r.total_latency
+            topology_results[tn] = {
+                "topology_summary": topology_summaries[tn],
+                "total_energy": float(r.total_energy),
+                "total_latency": float(r.total_latency),
+                "energy_per_network_access": float(r.energy_per_network_access),
+                "latency_per_network_access": float(r.latency_per_network_access),
+                "total_network_bytes": float(r.total_network_bytes),
+                "per_transfer": _json_ready(r.per_transfer),
+            }
         results.append({
             "desc": desc,
+            "workload_path": str(path),
+            "params": params,
             "compute_e": ce,
             "compute_l": cl,
+            "mapping_wall_time_s": elapsed,
             "bytes": total_bytes,
             "bcast_pct": bcast_pct,
             "lats": lats,
+            "transfers": [_serialize_transfer(t) for t in transfers],
+            "topologies": topology_results,
         })
 
     print(f"\n\n{'=' * 120}")
@@ -174,16 +227,34 @@ def main():
     print(f"{'=' * 120}")
     torus_wins = sum(1 for r in results if min(r["lats"], key=r["lats"].get) == "Torus 4x4x4")
     print(f"Torus 4x4x4 wins: {torus_wins}/{len(results)} workloads")
+    insights = {"torus_4x4x4_wins": torus_wins, "num_workloads": len(results)}
 
     bcast_heavy = [r for r in results if r["bcast_pct"] > 80]
     if bcast_heavy:
         avg_speedup = sum(r["lats"]["Mesh 4x4x4"] / r["lats"]["Torus 4x4x4"] for r in bcast_heavy) / len(bcast_heavy)
         print(f"Broadcast-heavy (>80%): Torus avg {avg_speedup:.2f}x faster than Mesh")
+        insights["broadcast_heavy_avg_mesh_over_torus_speedup"] = avg_speedup
 
     ar_heavy = [r for r in results if r["bcast_pct"] < 60]
     if ar_heavy:
         avg_speedup = sum(r["lats"]["Mesh 4x4x4"] / r["lats"]["Torus 4x4x4"] for r in ar_heavy) / len(ar_heavy)
         print(f"AllReduce-heavy (<60% bcast): Torus avg {avg_speedup:.2f}x faster than Mesh")
+        insights["allreduce_heavy_avg_mesh_over_torus_speedup"] = avg_speedup
+
+    results_path = save_results({
+        "run_timestamp": datetime.now().astimezone().isoformat(),
+        "accelforge_root": str(ACCELFORGE.resolve()),
+        "workloads_dir": str(workloads_dir),
+        "architecture_yaml": str(ARCH),
+        "map_chips": MAP_CHIPS,
+        "eval_chips": EVAL_CHIPS,
+        "scale": SCALE,
+        "topology_summaries": topology_summaries,
+        "results": results,
+        "insights": insights,
+    })
+
+    print(f"\nSaved results to {results_path}")
 
     print("\nDone!")
 

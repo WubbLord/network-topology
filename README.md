@@ -110,26 +110,21 @@ So the "convergence" behavior here is really a repeated search-and-prune loop ov
 
 The sweep script also manually instantiates some non-cubic torus shapes to compare aspect ratios.
 
-## Running The Code
+## How To Run The Code
 
-### 1. Install local dependencies
+### Setup
 
 ```bash
 python3 -m venv .venv
 . .venv/bin/activate
-pip install -e '.[dev]'
+pip install -e .
 ```
 
-This installs:
+For tests, use `pip install -e '.[dev]'`. For the full sweep, use `pip install -e '.[accelforge]'` and point `ACCELFORGE_ROOT` at a local AccelForge checkout that contains `examples/workloads`.
 
-- the local `network-topology` package in editable mode
-- `numpy`
-- `scipy`
-- `pytest`
+### Smoke Test
 
-### 2. Run a local smoke test
-
-This exercises the library without needing AccelForge:
+This smoke test exercises the topology model without requiring AccelForge:
 
 ```bash
 .venv/bin/python - <<'PY'
@@ -147,27 +142,13 @@ print(result.summary())
 PY
 ```
 
-### 3. Run the topology sweep
-
-The sweep requires a local AccelForge checkout because it loads workload YAMLs from that repo and imports `accelforge` directly.
+### Topology Sweep
 
 ```bash
 ACCELFORGE_ROOT=/path/to/accelforge .venv/bin/python sweep_gpt3.py
 ```
 
-Notes:
-
-- The script expects workload YAMLs under `$ACCELFORGE_ROOT/examples/workloads`.
-- The architecture YAML is local to this repo: `accelforge_configs/tpu_v4_distributed_1d.yaml`.
-- The current sweep maps on 2 chips and scales traffic to 64 chips before replaying it on the candidate topologies.
-- If `ACCELFORGE_ROOT` is not set and there is no sibling `../accelforge` checkout, the script exits with a clear error.
-
-The script prints:
-
-- a topology summary table
-- one mapping pass per workload
-- a results table with per-topology latency in milliseconds
-- a short insight summary
+This uses the local architecture config in `accelforge_configs/tpu_v4_distributed_1d.yaml` and workload templates from `$ACCELFORGE_ROOT/examples/workloads`. If `ACCELFORGE_ROOT` is unset, the script falls back to a sibling checkout at `../accelforge`. The full run is also saved to `logs/<timestamp>/results.json`.
 
 ## Running Tests
 

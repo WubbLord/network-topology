@@ -46,10 +46,10 @@ hw = dict(link_bandwidth=ICI_LINK_BW_UNIDIR, energy_per_bit_per_hop=ICI_ENERGY_P
           per_hop_latency=ICI_PER_HOP_LATENCY)
 
 TOPOLOGIES = {
-    # "Torus 4x4x4": Torus3D(dims=(4, 4, 4), **hw),
-    # "Mesh 4x4x4": Mesh3D(dims=(4, 4, 4), **hw),
-    # "Torus 8x2x4": Torus3D(dims=(8, 2, 4), **hw),
-    # "Torus 16x2x2": Torus3D(dims=(16, 2, 2), **hw),
+    "Torus 4x4x4": Torus3D(dims=(4, 4, 4), **hw),
+    "Mesh 4x4x4": Mesh3D(dims=(4, 4, 4), **hw),
+    "Torus 8x2x4": Torus3D(dims=(8, 2, 4), **hw),
+    "Torus 16x2x2": Torus3D(dims=(16, 2, 2), **hw),
     "Ring 64": Ring(num_chips=64, **hw),
 }
 
@@ -500,20 +500,20 @@ def load_accelforge(accelforge_root: Path):
 
 def make_workloads(workloads_dir: Path):
     return [
-        # ("Tiny 256x256", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 256, "KN": 256}),
+        ("Tiny 256x256", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 256, "KN": 256}),
         ("Small 1Kx1K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 1024, "KN": 1024}),
-        # ("Medium 4Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 4096, "KN": 4096}),
-        # ("Wide 4Kx16K (FFN-like)", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 4096, "KN": 16384}),
-        # ("Tall 16Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 16384, "KN": 4096}),
-        # ("2-layer chain 4Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 2, "M": 4096, "KN": 4096}),
-        # ("3-layer chain 4Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 3, "M": 4096, "KN": 4096}),
+        ("Medium 4Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 4096, "KN": 4096}),
+        ("Wide 4Kx16K (FFN-like)", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 4096, "KN": 16384}),
+        ("Tall 16Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 16384, "KN": 4096}),
+        ("2-layer chain 4Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 2, "M": 4096, "KN": 4096}),
+        ("3-layer chain 4Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 3, "M": 4096, "KN": 4096}),
         ("Attn-like 128x128", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 128, "KN": 128}),
-        # ("Attn-like 512x512", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 512, "KN": 512}),
-        # ("Attn-like 2Kx2K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 2048, "KN": 2048}),
-        # ("Decode 1x4096", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 1, "KN": 4096}),
-        # ("Decode 1x16384", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 1, "KN": 16384}),
-        # ("Batch 64tok x 4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 64, "KN": 4096}),
-        # ("Batch 1024tok x 4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 1024, "KN": 4096}),
+        ("Attn-like 512x512", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 512, "KN": 512}),
+        ("Attn-like 2Kx2K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 2048, "KN": 2048}),
+        ("Decode 1x4096", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 1, "KN": 4096}),
+        ("Decode 1x16384", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 1, "KN": 16384}),
+        ("Batch 64tok x 4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 64, "KN": 4096}),
+        ("Batch 1024tok x 4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 1024, "KN": 4096}),
     ]
 
 

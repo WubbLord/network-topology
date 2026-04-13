@@ -5,9 +5,10 @@ Topology sweep: evaluate workloads on multiple topologies with congestion modeli
 Maps on 2 chips (fast), scales data movement to 64 chips, evaluates on 5 topologies.
 
 Usage:
-    ACCELFORGE_ROOT=/path/to/accelforge .venv/bin/python sweep_gpt3.py
+    ACCELFORGE_ROOT=/path/to/accelforge .venv/bin/python sweep_gpt3.py [--damping]
 """
 
+import argparse
 import contextlib
 import copy
 import json
@@ -155,6 +156,19 @@ def _mapping_to_yaml(mapping) -> str:
     return to_yaml_string({"mapping": _mapping_value_to_data(mapping)})
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run the topology sweep.")
+    parser.add_argument(
+        "--damping",
+        action="store_true",
+        help=(
+            "Enable damped proxy updates. When omitted, each iteration applies the "
+            "new proxy estimate directly."
+        ),
+    )
+    return parser.parse_args()
+
+
 def _tensor_rank_vars(einsum, tensor_name):
     for tensor_access in einsum.tensor_accesses:
         if tensor_access.name == tensor_name:
@@ -237,7 +251,9 @@ def _max_relative_change(old_values, new_values):
     return float(max_change)
 
 
-def _damp_network_proxies(old_values, new_values):
+def _damp_network_proxies(old_values, new_values, use_damping=False):
+    if not use_damping:
+        return dict(new_values)
     return {
         key: (1.0 - PROXY_DAMPING) * old_values[key] + PROXY_DAMPING * new_values[key]
         for key in old_values
@@ -484,14 +500,14 @@ def load_accelforge(accelforge_root: Path):
 
 def make_workloads(workloads_dir: Path):
     return [
-        ("Tiny 256x256", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 256, "KN": 256}),
-        # ("Small 1Kx1K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 1024, "KN": 1024}),
+        # ("Tiny 256x256", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 256, "KN": 256}),
+        ("Small 1Kx1K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 1024, "KN": 1024}),
         # ("Medium 4Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 4096, "KN": 4096}),
         # ("Wide 4Kx16K (FFN-like)", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 4096, "KN": 16384}),
         # ("Tall 16Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 16384, "KN": 4096}),
         # ("2-layer chain 4Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 2, "M": 4096, "KN": 4096}),
         # ("3-layer chain 4Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 3, "M": 4096, "KN": 4096}),
-        # ("Attn-like 128x128", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 128, "KN": 128}),
+        ("Attn-like 128x128", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 128, "KN": 128}),
         # ("Attn-like 512x512", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 512, "KN": 512}),
         # ("Attn-like 2Kx2K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 2048, "KN": 2048}),
         # ("Decode 1x4096", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 1, "KN": 4096}),
@@ -589,7 +605,15 @@ def map_and_extract(path, params, network_proxies, af, map_workload_to_arch):
     }
 
 
-def run_feedback_loop(path, params, topology, af, map_workload_to_arch, mapping_dir: Path | None = None):
+def run_feedback_loop(
+    path,
+    params,
+    topology,
+    af,
+    map_workload_to_arch,
+    mapping_dir: Path | None = None,
+    use_damping=False,
+):
     network_proxies = _initial_network_proxies()
     iterations = []
     final_mapping_result = None
@@ -615,7 +639,9 @@ def run_feedback_loop(path, params, topology, af, map_workload_to_arch, mapping_
         proposed_proxies = _updated_network_proxies(
             network_proxies, collective_decisions, network_result
         )
-        updated_proxies = _damp_network_proxies(network_proxies, proposed_proxies)
+        updated_proxies = _damp_network_proxies(
+            network_proxies, proposed_proxies, use_damping=use_damping
+        )
         raw_relative_change = _max_relative_change(network_proxies, proposed_proxies)
         applied_relative_change = _max_relative_change(network_proxies, updated_proxies)
         total_bytes, allgather_pct = _collective_mix(mapping_result["transfers"])
@@ -677,6 +703,7 @@ def run_feedback_loop(path, params, topology, af, map_workload_to_arch, mapping_
 
 
 def main():
+    args = parse_args()
     af, map_workload_to_arch = load_accelforge(ACCELFORGE)
     workloads_dir = ACCELFORGE.resolve() / "examples" / "workloads"
     if not workloads_dir.exists():
@@ -690,7 +717,8 @@ def main():
     print("=" * 120)
     print(
         f"Topology Sweep: {len(workloads)} workloads x {len(TOPOLOGIES)} topologies "
-        f"({EVAL_CHIPS} chips, congestion-aware, iterative feedback)"
+        f"({EVAL_CHIPS} chips, congestion-aware, iterative feedback, "
+        f"damping={'on' if args.damping else 'off'})"
     )
     print("=" * 120)
 
@@ -724,6 +752,7 @@ def main():
                     af,
                     map_workload_to_arch,
                     mappings_root / _safe_path_part(desc) / _safe_path_part(topology_name),
+                    use_damping=args.damping,
                 )
             except Exception as exc:
                 print(f"FAILED: {exc}")
@@ -876,6 +905,7 @@ def main():
         "scale": SCALE,
         "feedback_loop": {
             "max_proxy_iters": MAX_PROXY_ITERS,
+            "damping_enabled": args.damping,
             "proxy_damping": PROXY_DAMPING,
             "proxy_rel_tol": PROXY_REL_TOL,
             "initial_network_proxies": _initial_network_proxies(),

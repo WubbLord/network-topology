@@ -4,6 +4,7 @@ from network_topology.cost_model import CollectiveType
 
 from sweep_matmuls import (
     _annotate_collective_decisions,
+    _damp_network_proxies,
     _infer_matmul_collectives,
     _initial_network_proxies,
     _updated_network_proxies,
@@ -141,3 +142,20 @@ def test_proxy_update_reduces_per_transfer_estimates_to_read_write_scalars():
     assert updated["NETWORK_READ_LATENCY"] == 0.15
     assert updated["NETWORK_WRITE_ENERGY"] == 2.0
     assert updated["NETWORK_WRITE_LATENCY"] == 0.6
+
+
+def test_damp_network_proxies_is_identity_when_disabled():
+    old = {
+        "NETWORK_READ_ENERGY": 1.0,
+        "NETWORK_WRITE_ENERGY": 2.0,
+        "NETWORK_READ_LATENCY": 3.0,
+        "NETWORK_WRITE_LATENCY": 4.0,
+    }
+    new = {
+        "NETWORK_READ_ENERGY": 10.0,
+        "NETWORK_WRITE_ENERGY": 20.0,
+        "NETWORK_READ_LATENCY": 30.0,
+        "NETWORK_WRITE_LATENCY": 40.0,
+    }
+
+    assert _damp_network_proxies(old, new, use_damping=False) == new

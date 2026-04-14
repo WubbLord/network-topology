@@ -31,7 +31,7 @@ from network_topology.tpu_v4 import ICI_LINK_BW_UNIDIR, ICI_ENERGY_PER_BIT_PER_H
 SCRIPT_DIR = Path(__file__).resolve().parent
 ACCELFORGE = Path(os.environ.get("ACCELFORGE_ROOT", SCRIPT_DIR.parent / "accelforge")).expanduser()
 ARCH = SCRIPT_DIR / "accelforge_configs" / "tpu_v4_distributed_1d.yaml"
-MAP_CHIPS = 2
+MAP_CHIPS = 8
 EVAL_CHIPS = 64
 SCALE = EVAL_CHIPS / MAP_CHIPS
 DEFAULT_NETWORK_READ_ENERGY = 7.03e-12
@@ -48,8 +48,8 @@ hw = dict(link_bandwidth=ICI_LINK_BW_UNIDIR, energy_per_bit_per_hop=ICI_ENERGY_P
 TOPOLOGIES = {
     "Torus 4x4x4": Torus3D(dims=(4, 4, 4), **hw),
     "Mesh 4x4x4": Mesh3D(dims=(4, 4, 4), **hw),
-    "Torus 8x2x4": Torus3D(dims=(8, 2, 4), **hw),
-    "Torus 16x2x2": Torus3D(dims=(16, 2, 2), **hw),
+    #"Torus 8x2x4": Torus3D(dims=(8, 2, 4), **hw),
+    #"Torus 16x2x2": Torus3D(dims=(16, 2, 2), **hw),
     "Ring 64": Ring(num_chips=64, **hw),
 }
 
@@ -63,7 +63,10 @@ def _json_ready(value):
         return [_json_ready(v) for v in value]
     if hasattr(value, "item"):
         return value.item()
-    return value
+    if isinstance(value, (int, float, bool, str)) or value is None:
+        return value
+    # Fallback for AccelForge's custom types (Float, etc.) — stringify
+    return str(value)
 
 
 def _serialize_transfer(transfer: NetworkTransfer):
@@ -500,20 +503,22 @@ def load_accelforge(accelforge_root: Path):
 
 def make_workloads(workloads_dir: Path):
     return [
-        ("Tiny 256x256", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 256, "KN": 256}),
-        ("Small 1Kx1K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 1024, "KN": 1024}),
-        ("Medium 4Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 4096, "KN": 4096}),
-        ("Wide 4Kx16K (FFN-like)", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 4096, "KN": 16384}),
-        ("Tall 16Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 16384, "KN": 4096}),
-        ("2-layer chain 4Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 2, "M": 4096, "KN": 4096}),
-        ("3-layer chain 4Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 3, "M": 4096, "KN": 4096}),
-        ("Attn-like 128x128", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 128, "KN": 128}),
-        ("Attn-like 512x512", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 512, "KN": 512}),
-        ("Attn-like 2Kx2K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 2048, "KN": 2048}),
-        ("Decode 1x4096", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 1, "KN": 4096}),
-        ("Decode 1x16384", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 1, "KN": 16384}),
-        ("Batch 64tok x 4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 64, "KN": 4096}),
-        ("Batch 1024tok x 4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 1024, "KN": 4096}),
+        #("Tiny 256x256", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 256, "KN": 256}),
+        #("Small 1Kx1K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 1024, "KN": 1024}),
+        #("Medium 4Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 4096, "KN": 4096}),
+        #("Wide 4Kx16K (FFN-like)", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 4096, "KN": 16384}),
+        #("Tall 16Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 16384, "KN": 4096}),
+        #("2-layer chain 4Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 2, "M": 4096, "KN": 4096}),
+        #("3-layer chain 4Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 3, "M": 4096, "KN": 4096}),
+        #("Attn-like 128x128", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 128, "KN": 128}),
+        #("Attn-like 512x512", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 512, "KN": 512}),
+        #("Attn-like 2Kx2K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 2048, "KN": 2048}),
+        #("Decode 1x4096", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 1, "KN": 4096}),
+        #("Decode 1x16384", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 1, "KN": 16384}),
+        #("Batch 64tok x 4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 64, "KN": 4096}),
+        #("Batch 1024tok x 4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 1024, "KN": 4096}),
+        # Giant workload that must shard: each tensor is 32 GiB, doesn't fit on one chip's 32 GiB HBM
+        ("Giant 128Kx128K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 131072, "KN": 131072}),
     ]
 
 
@@ -591,6 +596,26 @@ def map_and_extract(path, params, network_proxies, af, map_workload_to_arch):
                     collective_type=CollectiveType[decision["collective_type"]],
                 )
             )
+
+    # Fallback: if sharding-based inference produced nothing, emit raw transfers
+    # for every NetworkMemory access. Reads → BROADCAST, writes → ALLREDUCE.
+    # This is less precise than the sharding analysis but ensures non-zero traffic
+    # when AccelForge picks a 1-chip mapping that bypasses chip parallelism.
+    if not transfers:
+        for (einsum_name, tensor), nbytes in network_reads.items():
+            if nbytes > 0:
+                transfers.append(NetworkTransfer(
+                    tensor_name=f"{einsum_name}:{tensor}",
+                    data_bytes=float(nbytes),
+                    collective_type=CollectiveType.BROADCAST,
+                ))
+        for (einsum_name, tensor), nbytes in network_writes.items():
+            if nbytes > 0:
+                transfers.append(NetworkTransfer(
+                    tensor_name=f"{einsum_name}:{tensor}",
+                    data_bytes=float(nbytes),
+                    collective_type=CollectiveType.ALLREDUCE,
+                ))
 
     return {
         "compute_energy": compute_e,

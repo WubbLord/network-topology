@@ -35,7 +35,7 @@ arch:
 
   - !Memory
     name: MainMemory
-    size: inf
+    size: 32 * 1024**3 * 8     # 32 GiB HBM2 (TPU v4 chip capacity, in bits)
     leak_power: 0
     area: 0
     actions:

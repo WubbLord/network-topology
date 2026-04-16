@@ -3,10 +3,14 @@ from types import SimpleNamespace
 from network_topology.cost_model import CollectiveType
 
 from sweep_matmuls import (
+    _build_milestone2_topology_summary,
     _annotate_collective_decisions,
     _damp_network_proxies,
+    _estimate_actual_system_cost,
     _infer_matmul_collectives,
     _initial_network_proxies,
+    _summarize_mapping_costs,
+    _summarize_actual_network,
     _updated_network_proxies,
 )
 
@@ -159,3 +163,160 @@ def test_damp_network_proxies_is_identity_when_disabled():
     }
 
     assert _damp_network_proxies(old, new, use_damping=False) == new
+
+
+def test_mapping_cost_summary_scales_energy_and_separates_networkmemory():
+    summary = _summarize_mapping_costs(
+        7.0,
+        {
+            ("Matmul0", "MAC", "None", "compute"): 1.0,
+            ("Matmul0", "NetworkMemory", "T1", "write"): 2.0,
+            ("Matmul1", "GlobalBuffer", "T0", "read"): 3.0,
+        },
+        {
+            ("Matmul0", "MAC"): 4.0,
+            ("Matmul0", "NetworkMemory"): 5.0,
+            ("Matmul1", "GlobalBuffer"): 6.0,
+        },
+    )
+
+    assert summary["proxy_total_energy_scaled"] == 192.0
+    assert summary["proxy_non_network_energy_scaled"] == 128.0
+    assert summary["proxy_network_energy_scaled"] == 64.0
+    assert summary["per_einsum"]["Matmul0"]["non_network_bottleneck_latency"] == 4.0
+    assert summary["per_einsum"]["Matmul0"]["proxy_network_latency"] == 5.0
+    assert summary["per_einsum"]["Matmul1"]["proxy_total_latency"] == 6.0
+
+
+def test_actual_system_cost_replaces_proxy_network_costs():
+    mapping_summary = {
+        "proxy_non_network_energy_scaled": 100.0,
+        "per_einsum": {
+            "Matmul0": {
+                "non_network_energy_scaled": 60.0,
+                "proxy_network_energy_scaled": 10.0,
+                "non_network_bottleneck_latency": 3.0,
+                "proxy_network_latency": 7.0,
+                "proxy_total_latency": 7.0,
+            },
+            "Matmul1": {
+                "non_network_energy_scaled": 40.0,
+                "proxy_network_energy_scaled": 20.0,
+                "non_network_bottleneck_latency": 11.0,
+                "proxy_network_latency": 2.0,
+                "proxy_total_latency": 11.0,
+            },
+        },
+    }
+    network_summary = {
+        "total_energy": 55.0,
+        "total_latency": 13.0,
+        "total_bytes": 200.0,
+        "per_einsum": {
+            "Matmul0": {
+                "estimated_network_energy": 30.0,
+                "assigned_network_latency": 5.0,
+            },
+            "Matmul1": {
+                "estimated_network_energy": 25.0,
+                "assigned_network_latency": 4.0,
+            },
+        },
+    }
+
+    summary = _estimate_actual_system_cost(mapping_summary, network_summary)
+
+    assert summary["estimated_total_energy_scaled"] == 155.0
+    assert summary["estimated_total_latency"] == 16.0
+    assert summary["per_einsum"]["Matmul0"]["estimated_actual_total_latency"] == 5.0
+    assert summary["per_einsum"]["Matmul1"]["estimated_actual_total_latency"] == 11.0
+
+
+def test_milestone2_topology_summary_reports_required_deltas():
+    decisions = [
+        {
+            "einsum": "Matmul0",
+            "tensor_name": "T1",
+            "collective_type": CollectiveType.ALLREDUCE.name,
+            "proxy_action": "write",
+            "data_bytes": 16.0,
+            "chip_sharded_ranks": ["n0"],
+        }
+    ]
+    network_result = SimpleNamespace(
+        total_energy=12.0,
+        total_latency=6.0,
+        total_network_bytes=16.0,
+        energy_per_network_access=0.75,
+        latency_per_network_access=0.375,
+        per_transfer=[
+            {
+                "tensor": "Matmul0:T1",
+                "collective": "ALLREDUCE",
+                "energy": 12.0,
+                "latency": 6.0,
+                "data_bytes": 16.0,
+            }
+        ],
+    )
+    annotated = _annotate_collective_decisions(decisions, network_result)
+    mapping_summary = _summarize_mapping_costs(
+        4.0,
+        {
+            ("Matmul0", "MAC", "None", "compute"): 1.0,
+            ("Matmul0", "NetworkMemory", "T1", "write"): 1.0,
+        },
+        {
+            ("Matmul0", "MAC"): 2.0,
+            ("Matmul0", "NetworkMemory"): 4.0,
+        },
+    )
+    network_summary = _summarize_actual_network(annotated, network_result)
+    estimated_actual = _estimate_actual_system_cost(mapping_summary, network_summary)
+
+    topology_result = {
+        "feedback_converged": True,
+        "final_network_proxies": {"NETWORK_WRITE_ENERGY": 0.75},
+        "feedback_iterations": [
+            {
+                "iteration": 1,
+                "input_network_proxies": {"NETWORK_WRITE_ENERGY": 0.1},
+                "updated_network_proxies": {"NETWORK_WRITE_ENERGY": 0.75},
+                "raw_relative_change": 1.0,
+                "applied_relative_change": 1.0,
+                "allgather_pct": 0.0,
+                "mapping": {
+                    "mapping_yaml_path": "mappings/workload/topology/iter_001.yaml",
+                    "mapping_sha256": "aaa",
+                    "cost_summary": mapping_summary,
+                },
+                "network": {"actual_summary": network_summary},
+                "estimated_actual_system": estimated_actual,
+                "collective_decisions": annotated,
+            },
+            {
+                "iteration": 2,
+                "input_network_proxies": {"NETWORK_WRITE_ENERGY": 0.75},
+                "updated_network_proxies": {"NETWORK_WRITE_ENERGY": 0.75},
+                "raw_relative_change": 0.0,
+                "applied_relative_change": 0.0,
+                "allgather_pct": 0.0,
+                "mapping": {
+                    "mapping_yaml_path": "mappings/workload/topology/iter_002.yaml",
+                    "mapping_sha256": "bbb",
+                    "cost_summary": mapping_summary,
+                },
+                "network": {"actual_summary": network_summary},
+                "estimated_actual_system": estimated_actual,
+                "collective_decisions": annotated,
+            },
+        ],
+    }
+
+    summary = _build_milestone2_topology_summary(topology_result)
+
+    assert summary["baseline_without_network_model"]["iteration"] == 1
+    assert summary["final_stabilized_mapping"]["iteration"] == 2
+    assert summary["changes"]["mapping_hash_changed_first_to_final"] is True
+    assert "energy" in summary["changes"]["without_network_proxy_to_first_actual"]
+    assert len(summary["convergence_trace"]) == 2

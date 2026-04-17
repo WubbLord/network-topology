@@ -1,8 +1,8 @@
 """Network topology modeling for distributed accelerator systems."""
 
 from network_topology.topology import (
-    Topology, Ring, Mesh2D, Mesh3D, Torus3D, Custom,
-    _make_ring_adj, _make_mesh_adj, _make_torus_adj,
+    Topology, Ring, Mesh2D, Mesh3D, Torus3D, TorusND, CirculantHD, Custom,
+    _make_ring_adj, _make_mesh_adj, _make_torus_adj, _make_circulant_adj,
 )
 from network_topology.cost_model import (
     NetworkCostResult, NetworkTransfer, CollectiveType, compute_network_cost,

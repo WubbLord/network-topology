@@ -61,6 +61,19 @@ def _make_mesh_adj(dims: tuple[int, ...]) -> np.ndarray:
     return adj
 
 
+def _make_circulant_adj(n: int, generators: tuple[int, ...]) -> np.ndarray:
+    """Build adjacency matrix for circulant graph C(n, generators).
+
+    Node i connects to (i ± g) mod n for each generator g.
+    """
+    adj = np.zeros((n, n), dtype=int)
+    for i in range(n):
+        for g in generators:
+            adj[i, (i + g) % n] = 1
+            adj[i, (i - g) % n] = 1
+    return adj
+
+
 def _make_torus_adj(dims: tuple[int, ...]) -> np.ndarray:
     total = math.prod(dims)
     adj = np.zeros((total, total), dtype=int)
@@ -331,6 +344,16 @@ class Mesh3D(Topology):
                          energy_per_bit_per_hop, per_hop_latency, full_duplex)
 
     def _allreduce_link_loads(self, data_bytes, participating_chips=None):
+        """
+        Mesh AllReduce using linear pipeline per dimension (no wraparound).
+
+        On a linear array of d nodes without wraparound, each link carries
+        ALL d chunks during reduce-scatter (flowing in both directions through
+        every link) and again during allgather. Total per link: 2 * data.
+
+        Compare to ring AllReduce (torus) where wraparound links allow each
+        link to carry only 2*(d-1)/d * data — a factor of d/(d-1) better.
+        """
         dx, dy, dz = self.dims
         n = dx * dy * dz
         if n <= 1:
@@ -339,11 +362,17 @@ class Mesh3D(Topology):
         for flat_idx in range(n):
             coords = _flat_to_coords(flat_idx, self.dims)
             for dim, d_size in enumerate([dx, dy, dz]):
-                if coords[dim] + 1 < d_size:
+                if d_size <= 1:
+                    continue
+                p = coords[dim]
+                if p + 1 < d_size:
                     neighbor = list(coords)
-                    neighbor[dim] += 1
+                    neighbor[dim] = p + 1
                     j = _chip_index_nd(tuple(neighbor), self.dims)
-                    bpl = 2 * (d_size - 1) * data_bytes / d_size
+                    # Linear pipeline: d chunks of size data/d each flow
+                    # through every link (no wraparound to bypass).
+                    # Reduce-scatter: data per link. Allgather: data per link.
+                    bpl = 2 * data_bytes
                     loads[(flat_idx, j)] += bpl
                     loads[(j, flat_idx)] += bpl
         return dict(loads)
@@ -447,6 +476,152 @@ class Torus3D(Topology):
         _ring_bcast_1d(0, dx, [list(sc)])
         _ring_bcast_1d(1, dy, [[x, sc[1], sc[2]] for x in range(dx)])
         _ring_bcast_1d(2, dz, [[x, y, sc[2]] for x in range(dx) for y in range(dy)])
+        return loads
+
+
+# --- N-dimensional Torus (generalized) ---
+
+@dataclass
+class TorusND(Topology):
+    """
+    N-dimensional torus with per-dimension ring collectives.
+    Generalizes Torus3D to arbitrary dimensions.
+
+    Examples:
+        TorusND((4,4,4), ...)       # same as Torus3D 4x4x4, 6 links/chip
+        TorusND((4,4,2,2), ...)     # 4D torus, 8 links/chip
+        TorusND((2,2,2,2,2,2), ...) # 6D hypercube, 12 links/chip
+    """
+    dims: tuple = ()
+
+    def __init__(self, dims, link_bandwidth, energy_per_bit_per_hop,
+                 per_hop_latency=500e-9, full_duplex=True):
+        object.__setattr__(self, "dims", tuple(dims))
+        super().__init__(_make_torus_adj(dims), link_bandwidth,
+                         energy_per_bit_per_hop, per_hop_latency, full_duplex)
+
+    def _allreduce_link_loads(self, data_bytes, participating_chips=None):
+        n = math.prod(self.dims)
+        if n <= 1:
+            return {}
+        loads: LinkLoads = defaultdict(float)
+        for flat_idx in range(n):
+            coords = _flat_to_coords(flat_idx, self.dims)
+            for dim, d_size in enumerate(self.dims):
+                neighbor = list(coords)
+                neighbor[dim] = (coords[dim] + 1) % d_size
+                j = _chip_index_nd(tuple(neighbor), self.dims)
+                if j != flat_idx:
+                    loads[(flat_idx, j)] += 2 * (d_size - 1) * data_bytes / d_size
+        return dict(loads)
+
+    def _broadcast_link_loads(self, data_bytes, src, dst_chips):
+        loads: dict[tuple[int, int], float] = {}
+        sc = _flat_to_coords(src, self.dims)
+
+        def _ring_bcast_1d(dim_idx, dim_size, sources):
+            for base in sources:
+                center = base[dim_idx]
+                half = dim_size // 2
+                for step in range(1, half + 1):
+                    f, t = list(base), list(base)
+                    f[dim_idx] = (center + step - 1) % dim_size
+                    t[dim_idx] = (center + step) % dim_size
+                    lk = (_chip_index_nd(tuple(f), self.dims),
+                          _chip_index_nd(tuple(t), self.dims))
+                    loads[lk] = loads.get(lk, 0) + data_bytes
+                for step in range(1, dim_size - 1 - half + 1):
+                    f, t = list(base), list(base)
+                    f[dim_idx] = (center - step + 1) % dim_size
+                    t[dim_idx] = (center - step) % dim_size
+                    lk = (_chip_index_nd(tuple(f), self.dims),
+                          _chip_index_nd(tuple(t), self.dims))
+                    loads[lk] = loads.get(lk, 0) + data_bytes
+
+        # Broadcast dimension by dimension, expanding sources each time
+        all_sources = [list(sc)]
+        for dim_idx, d_size in enumerate(self.dims):
+            _ring_bcast_1d(dim_idx, d_size, all_sources)
+            # Expand sources: all coords that have been reached so far
+            new_sources = []
+            for base in all_sources:
+                for val in range(d_size):
+                    new_base = list(base)
+                    new_base[dim_idx] = val
+                    new_sources.append(new_base)
+            all_sources = new_sources
+        return loads
+
+
+# --- Circulant (Hamiltonian-Decomposable) topology ---
+
+@dataclass
+class CirculantHD(Topology):
+    """
+    Circulant graph C(n, {g1, g2, g3}) with Hamiltonian-decomposable routing.
+
+    Each generator g (which must be coprime to n) produces an edge-disjoint
+    Hamiltonian cycle: 0 -> g -> 2g -> ... -> (n-1)g -> 0 (mod n).
+
+    AllReduce: 3 parallel ring AllReduces, one per Hamiltonian cycle.
+    Each ring carries 1/3 of the data, so per-link load = 2*(n-1)/n * B/3.
+
+    Broadcast: BFS spanning tree using ONLY reverse-direction edges
+    (i -> (i-g) % n), which don't overlap with AllReduce's forward edges
+    (i -> (i+g) % n). Each tree edge carries data_bytes.
+    """
+    generators: tuple = ()
+
+    def __init__(self, n, generators, link_bandwidth, energy_per_bit_per_hop,
+                 per_hop_latency=500e-9, full_duplex=True):
+        generators = tuple(sorted(generators))
+        for g in generators:
+            if math.gcd(g, n) != 1:
+                raise ValueError(
+                    f"Generator {g} is not coprime to {n}; "
+                    f"cannot form a Hamiltonian cycle."
+                )
+        object.__setattr__(self, "generators", generators)
+        super().__init__(_make_circulant_adj(n, generators), link_bandwidth,
+                         energy_per_bit_per_hop, per_hop_latency, full_duplex)
+
+    def _allreduce_link_loads(self, data_bytes, participating_chips=None):
+        """3-parallel-ring AllReduce over edge-disjoint Hamiltonian cycles."""
+        n = self.num_chips
+        if n <= 1:
+            return {}
+        k = len(self.generators)
+        bpl = 2 * (n - 1) * data_bytes / (n * k)
+        loads: LinkLoads = {}
+        for g in self.generators:
+            for i in range(n):
+                loads[(i, (i + g) % n)] = bpl
+        return loads
+
+    def _broadcast_link_loads(self, data_bytes, src, dst_chips):
+        """BFS broadcast using only reverse-direction edges (no overlap with AllReduce)."""
+        n = self.num_chips
+        if not dst_chips:
+            return {}
+        # Build BFS tree from src using only reverse edges: i -> (i - g) % n
+        visited = {src}
+        queue = [src]
+        parent = {}
+        while queue:
+            next_queue = []
+            for node in queue:
+                for g in self.generators:
+                    child = (node - g) % n
+                    if child not in visited:
+                        visited.add(child)
+                        parent[child] = node
+                        next_queue.append(child)
+            queue = next_queue
+
+        # Each tree edge carries data_bytes (store-and-forward)
+        loads: LinkLoads = {}
+        for child, par in parent.items():
+            loads[(par, child)] = data_bytes
         return loads
 
 

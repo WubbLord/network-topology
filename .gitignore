@@ -208,5 +208,14 @@ __marimo__/
 
 # additional
 logs/
+slurm/logs/
+
+# LaTeX build artifacts
+*.aux
+*.out
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+proposal.pdf
 
 PROJECT.md

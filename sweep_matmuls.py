@@ -25,7 +25,7 @@ logging.disable(logging.WARNING)
 
 from network_topology import compute_network_cost, make_tpu_v4_topology
 from network_topology.cost_model import NetworkTransfer, CollectiveType
-from network_topology.topology import Torus3D, Mesh3D, Ring
+from network_topology.topology import Torus3D, Mesh3D, Ring, TorusND, CirculantHD
 from network_topology.tpu_v4 import ICI_LINK_BW_UNIDIR, ICI_ENERGY_PER_BIT_PER_HOP, ICI_PER_HOP_LATENCY
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -48,9 +48,14 @@ hw = dict(link_bandwidth=ICI_LINK_BW_UNIDIR, energy_per_bit_per_hop=ICI_ENERGY_P
 TOPOLOGIES = {
     "Torus 4x4x4": Torus3D(dims=(4, 4, 4), **hw),
     "Mesh 4x4x4": Mesh3D(dims=(4, 4, 4), **hw),
-    #"Torus 8x2x4": Torus3D(dims=(8, 2, 4), **hw),
-    #"Torus 16x2x2": Torus3D(dims=(16, 2, 2), **hw),
+    "Torus 8x2x4": Torus3D(dims=(8, 2, 4), **hw),
     "Ring 64": Ring(num_chips=64, **hw),
+    # Higher-dimensional tori (proposed topologies for Milestone 3)
+    "4D Torus 4x4x2x2": TorusND(dims=(4, 4, 2, 2), **hw),     # 8 links/chip
+    "5D Torus 4x2x2x2x2": TorusND(dims=(4, 2, 2, 2, 2), **hw), # 10 links/chip
+    "6D Hypercube": TorusND(dims=(2, 2, 2, 2, 2, 2), **hw),     # 12 links/chip
+    # Optimal circulant (Milestone 3 proposal — same 6 links/chip as Torus)
+    "Circulant {1,5,17}": CirculantHD(64, (1, 5, 17), **hw),   # 6 links/chip, 2.29x faster AR
 }
 
 
@@ -168,6 +173,24 @@ def parse_args():
             "Enable damped proxy updates. When omitted, each iteration applies the "
             "new proxy estimate directly."
         ),
+    )
+    parser.add_argument(
+        "--topology",
+        type=str,
+        default=None,
+        help="Run only this topology (e.g. 'Torus 4x4x4'). For parallel Slurm jobs.",
+    )
+    parser.add_argument(
+        "--workload",
+        type=str,
+        default=None,
+        help="Run only this workload (substring match on name). For parallel Slurm jobs.",
+    )
+    parser.add_argument(
+        "--run-dir",
+        type=str,
+        default=None,
+        help="Shared output directory. If set, results are saved as <run-dir>/<topology>.json.",
     )
     return parser.parse_args()
 
@@ -503,22 +526,28 @@ def load_accelforge(accelforge_root: Path):
 
 def make_workloads(workloads_dir: Path):
     return [
-        #("Tiny 256x256", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 256, "KN": 256}),
-        #("Small 1Kx1K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 1024, "KN": 1024}),
-        #("Medium 4Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 4096, "KN": 4096}),
-        #("Wide 4Kx16K (FFN-like)", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 4096, "KN": 16384}),
-        #("Tall 16Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 16384, "KN": 4096}),
-        #("2-layer chain 4Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 2, "M": 4096, "KN": 4096}),
-        #("3-layer chain 4Kx4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 3, "M": 4096, "KN": 4096}),
-        #("Attn-like 128x128", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 128, "KN": 128}),
-        #("Attn-like 512x512", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 512, "KN": 512}),
-        #("Attn-like 2Kx2K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 2048, "KN": 2048}),
-        #("Decode 1x4096", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 1, "KN": 4096}),
-        #("Decode 1x16384", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 1, "KN": 16384}),
-        #("Batch 64tok x 4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 64, "KN": 4096}),
-        #("Batch 1024tok x 4K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 1024, "KN": 4096}),
-        # Giant workload that must shard: each tensor is 32 GiB, doesn't fit on one chip's 32 GiB HBM
-        ("Giant 128Kx128K", workloads_dir / "matmuls.yaml", {"N_EINSUMS": 1, "M": 131072, "KN": 131072}),
+        # === Giant matmuls that force chip sharding (total working set > 32 GiB) ===
+        # Square: T0=16GB, W0=16GB, T1=16GB → 48 GB total
+        ("Square 128Kx128K", workloads_dir / "matmuls.yaml",
+         {"N_EINSUMS": 1, "M": 131072, "KN": 131072}),
+        # Wide (FFN-like): T0=2GB, W0=69GB, T1=2GB → W0 alone forces sharding
+        ("Wide 8Kx256K", workloads_dir / "matmuls.yaml",
+         {"N_EINSUMS": 1, "M": 8192, "KN": 262144}),
+        # Tall (activation-heavy): T0=17GB, W0=4GB, T1=17GB → 38 GB total
+        ("Tall 256Kx64K", workloads_dir / "matmuls.yaml",
+         {"N_EINSUMS": 1, "M": 262144, "KN": 65536}),
+        # Very wide (decode-like): T0=0.5GB, W0=69GB, T1=0.5GB → weight-dominated
+        ("VeryWide 2Kx256K", workloads_dir / "matmuls.yaml",
+         {"N_EINSUMS": 1, "M": 2048, "KN": 262144}),
+        # Rectangular: T0=8GB, W0=32GB, T1=8GB → mixed
+        ("Rect 64Kx128K", workloads_dir / "matmuls.yaml",
+         {"N_EINSUMS": 1, "M": 65536, "KN": 131072}),
+        # Large square (2x bigger): T0=64GB, W0=64GB, T1=64GB → heavily sharded
+        ("LargeSquare 256Kx256K", workloads_dir / "matmuls.yaml",
+         {"N_EINSUMS": 1, "M": 262144, "KN": 262144}),
+        # Very tall: T0=69GB, W0=0.5GB, T1=69GB → activation-dominated
+        ("VeryTall 256Kx8K", workloads_dir / "matmuls.yaml",
+         {"N_EINSUMS": 1, "M": 262144, "KN": 8192}),
     ]
 
 
@@ -577,13 +606,35 @@ def map_and_extract(path, params, network_proxies, af, map_workload_to_arch):
                 "is_output": tensor_access.output,
             }
 
-        decisions = _infer_matmul_collectives(
-            einsum_name,
-            tensor_infos,
-            {name: network_reads[(einsum_name, name)] for name in tensor_infos},
-            {name: network_writes[(einsum_name, name)] for name in tensor_infos},
-            tensor_size_bytes,
-        )
+        try:
+            decisions = _infer_matmul_collectives(
+                einsum_name,
+                tensor_infos,
+                {name: network_reads[(einsum_name, name)] for name in tensor_infos},
+                {name: network_writes[(einsum_name, name)] for name in tensor_infos},
+                tensor_size_bytes,
+            )
+        except ValueError:
+            # Not a 2-input matmul (e.g. copy op, softmax, elementwise).
+            # Use per-einsum fallback: reads → ALLGATHER, writes → ALLREDUCE.
+            decisions = []
+            for name, info in tensor_infos.items():
+                rbytes = network_reads[(einsum_name, name)]
+                wbytes = network_writes[(einsum_name, name)]
+                if rbytes > 0 and not info["is_output"]:
+                    decisions.append(_make_collective_decision(
+                        einsum_name, name, CollectiveType.ALLGATHER, "read",
+                        rbytes * SCALE if rbytes < 1e6 else rbytes,
+                        "Non-matmul einsum: treating read as ALLGATHER",
+                        info["tensor_ranks"], info["chip_sharded_ranks"],
+                    ))
+                if wbytes > 0 and info["is_output"]:
+                    decisions.append(_make_collective_decision(
+                        einsum_name, name, CollectiveType.ALLREDUCE, "write",
+                        wbytes * SCALE if wbytes < 1e6 else wbytes,
+                        "Non-matmul einsum: treating write as ALLREDUCE",
+                        info["tensor_ranks"], info["chip_sharded_ranks"],
+                    ))
         collective_decisions.extend(decisions)
 
         for decision in decisions:
@@ -736,12 +787,37 @@ def main():
             f"Expected workload specs under {workloads_dir}, but the directory does not exist."
         )
     workloads = make_workloads(workloads_dir)
-    run_dir = make_run_dir()
+
+    # Filter workloads if --workload is specified
+    if args.workload:
+        workloads = [(d, p, prm) for d, p, prm in workloads if args.workload in d]
+        if not workloads:
+            raise SystemExit(
+                f"No workload matching '{args.workload}'. "
+                f"Available: {', '.join(d for d, _, _ in make_workloads(workloads_dir))}"
+            )
+
+    # Filter topologies if --topology is specified (for parallel Slurm jobs)
+    active_topologies = TOPOLOGIES
+    if args.topology:
+        if args.topology not in TOPOLOGIES:
+            raise SystemExit(
+                f"Unknown topology '{args.topology}'. "
+                f"Available: {', '.join(TOPOLOGIES.keys())}"
+            )
+        active_topologies = {args.topology: TOPOLOGIES[args.topology]}
+
+    # Use shared run-dir if specified, otherwise create a new one
+    if args.run_dir:
+        run_dir = Path(args.run_dir)
+        run_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        run_dir = make_run_dir()
     mappings_root = run_dir / "mappings"
 
     print("=" * 120)
     print(
-        f"Topology Sweep: {len(workloads)} workloads x {len(TOPOLOGIES)} topologies "
+        f"Topology Sweep: {len(workloads)} workloads x {len(active_topologies)} topologies "
         f"({EVAL_CHIPS} chips, congestion-aware, iterative feedback, "
         f"damping={'on' if args.damping else 'off'})"
     )
@@ -750,8 +826,8 @@ def main():
     print(f"\n{'Topology':<18s} {'Diam':>5s} {'AvgHop':>7s} {'Degree':>7s} {'BisectBW':>10s}")
     print("-" * 50)
     topology_summaries = {}
-    for tn in TOPOLOGIES:
-        s = TOPOLOGIES[tn].summary()
+    for tn in active_topologies:
+        s = active_topologies[tn].summary()
         topology_summaries[tn] = _json_ready(s)
         print(f"{tn:<18s} {s['diameter']:>5d} {s['avg_hops']:>7.2f} {s['min_degree']:>3d}-{s['max_degree']:<3d} "
               f"{s['bisection_bandwidth_TB_s']:>8.2f} TB/s")
@@ -766,7 +842,7 @@ def main():
         compute_l_by_topology = {}
         mapping_wall_time_s_by_topology = {}
         topology_results = {}
-        for topology_name, topo in TOPOLOGIES.items():
+        for topology_name, topo in active_topologies.items():
             t0 = time.time()
             print(f"  {topology_name:<18s} mapping+feedback...", end=" ", flush=True)
             try:
@@ -853,7 +929,7 @@ def main():
     print("RESULTS (latency in ms, with link congestion)")
     print(f"{'=' * 120}")
     print(f"{'Workload':>28s} {'Bytes':>10s} {'AG%':>7s}", end="")
-    for tn in TOPOLOGIES:
+    for tn in active_topologies:
         print(f" {tn:>14s}", end="")
     print(f" {'Best':>10s} {'Worst':>10s} {'Speedup':>8s}")
     print("-" * 130)
@@ -919,7 +995,7 @@ def main():
         print(f"Reduction-heavy (<20% all-gather): Torus avg {avg_speedup:.2f}x faster than Mesh")
         insights["reduction_heavy_avg_mesh_over_torus_speedup"] = avg_speedup
 
-    results_path = save_results_in_dir(run_dir, {
+    payload = {
         "run_timestamp": datetime.now().astimezone().isoformat(),
         "accelforge_root": str(ACCELFORGE.resolve()),
         "workloads_dir": str(workloads_dir),
@@ -938,9 +1014,23 @@ def main():
         "topology_summaries": topology_summaries,
         "results": results,
         "insights": insights,
-    })
+    }
 
-    print(f"\nSaved results to {results_path}")
+    # When running a subset (parallel mode), save per-combination JSON
+    if args.topology or args.workload:
+        parts = []
+        if args.workload:
+            parts.append(_safe_path_part(args.workload))
+        if args.topology:
+            parts.append(_safe_path_part(args.topology))
+        combo_filename = "__".join(parts) + ".json"
+        combo_path = run_dir / combo_filename
+        with combo_path.open("w", encoding="utf-8") as f:
+            json.dump(_json_ready(payload), f, indent=2, sort_keys=True)
+        print(f"\nSaved results to {combo_path}")
+    else:
+        results_path = save_results_in_dir(run_dir, payload)
+        print(f"\nSaved results to {results_path}")
 
     print("\nDone!")
 

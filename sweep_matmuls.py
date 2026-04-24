@@ -11,6 +11,7 @@ Usage:
 import argparse
 import contextlib
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -102,6 +103,13 @@ def make_run_dir() -> Path:
 
 def save_results_in_dir(out_dir: Path, payload: dict) -> Path:
     out_path = out_dir / "results.json"
+    with out_path.open("w", encoding="utf-8") as f:
+        json.dump(_json_ready(payload), f, indent=2, sort_keys=True)
+    return out_path
+
+
+def save_named_json_in_dir(out_dir: Path, filename: str, payload: dict) -> Path:
+    out_path = out_dir / filename
     with out_path.open("w", encoding="utf-8") as f:
         json.dump(_json_ready(payload), f, indent=2, sort_keys=True)
     return out_path
@@ -283,6 +291,529 @@ def _damp_network_proxies(old_values, new_values, use_damping=False):
     return {
         key: (1.0 - PROXY_DAMPING) * old_values[key] + PROXY_DAMPING * new_values[key]
         for key in old_values
+    }
+
+
+def _mapping_sha256(mapping_yaml: str) -> str:
+    return hashlib.sha256(mapping_yaml.encode("utf-8")).hexdigest()
+
+
+def _delta_summary(before: float, after: float):
+    delta = float(after - before)
+    if abs(before) <= 1e-30:
+        relative_change = 0.0 if abs(after) <= 1e-30 else None
+    else:
+        relative_change = delta / float(before)
+    return {
+        "before": float(before),
+        "after": float(after),
+        "delta": delta,
+        "relative_change": relative_change,
+        "percent_change": (
+            None if relative_change is None else float(relative_change * 100.0)
+        ),
+    }
+
+
+def _summarize_mapping_costs(total_latency, energy_details, latency_details):
+    energy_by_component = defaultdict(float)
+    per_einsum = defaultdict(
+        lambda: {
+            "energy_by_component_scaled": defaultdict(float),
+            "latency_by_component": {},
+            "non_network_energy_scaled": 0.0,
+            "proxy_network_energy_scaled": 0.0,
+        }
+    )
+
+    for (einsum_name, component, _tensor, _action), value in energy_details.items():
+        scaled_value = float(value) * SCALE
+        energy_by_component[component] += scaled_value
+        bucket = per_einsum[einsum_name]
+        bucket["energy_by_component_scaled"][component] += scaled_value
+        if component == "NetworkMemory":
+            bucket["proxy_network_energy_scaled"] += scaled_value
+        else:
+            bucket["non_network_energy_scaled"] += scaled_value
+
+    for (einsum_name, component), value in latency_details.items():
+        per_einsum[einsum_name]["latency_by_component"][component] = float(value)
+
+    proxy_total_latency_reconstructed = 0.0
+    non_network_total_latency_reconstructed = 0.0
+    normalized_per_einsum = {}
+    for einsum_name, bucket in sorted(per_einsum.items()):
+        latency_by_component = dict(sorted(bucket["latency_by_component"].items()))
+        proxy_network_latency = float(latency_by_component.get("NetworkMemory", 0.0))
+        non_network_bottleneck_latency = max(
+            (
+                latency
+                for component, latency in latency_by_component.items()
+                if component != "NetworkMemory"
+            ),
+            default=0.0,
+        )
+        proxy_total_latency = max(latency_by_component.values(), default=0.0)
+        proxy_total_latency_reconstructed += proxy_total_latency
+        non_network_total_latency_reconstructed += non_network_bottleneck_latency
+        normalized_per_einsum[einsum_name] = {
+            "energy_by_component_scaled": dict(
+                sorted(bucket["energy_by_component_scaled"].items())
+            ),
+            "latency_by_component": latency_by_component,
+            "non_network_energy_scaled": float(bucket["non_network_energy_scaled"]),
+            "proxy_network_energy_scaled": float(bucket["proxy_network_energy_scaled"]),
+            "non_network_bottleneck_latency": non_network_bottleneck_latency,
+            "proxy_network_latency": proxy_network_latency,
+            "proxy_total_latency": proxy_total_latency,
+        }
+
+    proxy_total_energy_scaled = float(sum(energy_by_component.values()))
+    proxy_network_energy_scaled = float(energy_by_component.get("NetworkMemory", 0.0))
+    return {
+        "proxy_total_energy_scaled": proxy_total_energy_scaled,
+        "proxy_non_network_energy_scaled": (
+            proxy_total_energy_scaled - proxy_network_energy_scaled
+        ),
+        "proxy_network_energy_scaled": proxy_network_energy_scaled,
+        "proxy_total_latency": float(total_latency),
+        "proxy_total_latency_reconstructed": float(proxy_total_latency_reconstructed),
+        "non_network_total_latency_reconstructed": float(
+            non_network_total_latency_reconstructed
+        ),
+        "energy_by_component_scaled": dict(sorted(energy_by_component.items())),
+        "per_einsum": normalized_per_einsum,
+    }
+
+
+def _summarize_actual_network(decisions, network_result):
+    per_collective_type = defaultdict(
+        lambda: {
+            "count": 0,
+            "data_bytes": 0.0,
+            "estimated_network_energy": 0.0,
+            "assigned_network_latency": 0.0,
+        }
+    )
+    per_einsum = defaultdict(
+        lambda: {
+            "data_bytes": 0.0,
+            "estimated_network_energy": 0.0,
+            "assigned_network_latency": 0.0,
+            "collective_counts": defaultdict(int),
+            "collective_bytes": defaultdict(float),
+            "collectives": [],
+        }
+    )
+
+    for decision in decisions:
+        collective_type = decision["collective_type"]
+        data_bytes = float(decision["data_bytes"])
+        if collective_type is None or data_bytes <= 0:
+            continue
+
+        energy = float(decision.get("estimated_network_energy", 0.0))
+        latency = float(decision.get("estimated_network_latency", 0.0))
+        per_collective_type[collective_type]["count"] += 1
+        per_collective_type[collective_type]["data_bytes"] += data_bytes
+        per_collective_type[collective_type]["estimated_network_energy"] += energy
+        per_collective_type[collective_type]["assigned_network_latency"] += latency
+
+        bucket = per_einsum[decision["einsum"]]
+        bucket["data_bytes"] += data_bytes
+        bucket["estimated_network_energy"] += energy
+        bucket["assigned_network_latency"] += latency
+        bucket["collective_counts"][collective_type] += 1
+        bucket["collective_bytes"][collective_type] += data_bytes
+        bucket["collectives"].append(
+            {
+                "tensor_name": decision["tensor_name"],
+                "collective_type": collective_type,
+                "proxy_action": decision.get("proxy_action"),
+                "data_bytes": data_bytes,
+                "estimated_network_energy": energy,
+                "estimated_network_latency": latency,
+                "reason": decision.get("reason"),
+            }
+        )
+
+    normalized_per_einsum = {}
+    for einsum_name, bucket in sorted(per_einsum.items()):
+        normalized_per_einsum[einsum_name] = {
+            "data_bytes": float(bucket["data_bytes"]),
+            "estimated_network_energy": float(bucket["estimated_network_energy"]),
+            "assigned_network_latency": float(bucket["assigned_network_latency"]),
+            "collective_counts": dict(sorted(bucket["collective_counts"].items())),
+            "collective_bytes": dict(sorted(bucket["collective_bytes"].items())),
+            "collectives": sorted(
+                bucket["collectives"], key=lambda item: item["tensor_name"]
+            ),
+        }
+
+    return {
+        "total_energy": float(network_result.total_energy),
+        "total_latency": float(network_result.total_latency),
+        "total_bytes": float(network_result.total_network_bytes),
+        "energy_per_byte": float(network_result.energy_per_network_access),
+        "latency_per_byte": float(network_result.latency_per_network_access),
+        "per_transfer": _json_ready(network_result.per_transfer),
+        "per_collective_type": dict(sorted(per_collective_type.items())),
+        "per_einsum": normalized_per_einsum,
+    }
+
+
+def _estimate_actual_system_cost(mapping_cost_summary, network_summary):
+    per_einsum = {}
+    total_latency = 0.0
+    einsum_names = sorted(
+        set(mapping_cost_summary["per_einsum"]) | set(network_summary["per_einsum"])
+    )
+    for einsum_name in einsum_names:
+        mapping_einsum = mapping_cost_summary["per_einsum"].get(einsum_name, {})
+        network_einsum = network_summary["per_einsum"].get(einsum_name, {})
+
+        non_network_energy_scaled = float(
+            mapping_einsum.get("non_network_energy_scaled", 0.0)
+        )
+        proxy_network_energy_scaled = float(
+            mapping_einsum.get("proxy_network_energy_scaled", 0.0)
+        )
+        actual_network_energy = float(
+            network_einsum.get("estimated_network_energy", 0.0)
+        )
+        non_network_bottleneck_latency = float(
+            mapping_einsum.get("non_network_bottleneck_latency", 0.0)
+        )
+        proxy_network_latency = float(mapping_einsum.get("proxy_network_latency", 0.0))
+        proxy_total_latency = float(mapping_einsum.get("proxy_total_latency", 0.0))
+        assigned_network_latency = float(
+            network_einsum.get("assigned_network_latency", 0.0)
+        )
+        estimated_actual_total_latency = max(
+            non_network_bottleneck_latency, assigned_network_latency
+        )
+        total_latency += estimated_actual_total_latency
+
+        per_einsum[einsum_name] = {
+            "non_network_energy_scaled": non_network_energy_scaled,
+            "proxy_network_energy_scaled": proxy_network_energy_scaled,
+            "actual_network_energy": actual_network_energy,
+            "non_network_bottleneck_latency": non_network_bottleneck_latency,
+            "proxy_network_latency": proxy_network_latency,
+            "proxy_total_latency": proxy_total_latency,
+            "assigned_network_latency": assigned_network_latency,
+            "estimated_actual_total_energy_scaled": (
+                non_network_energy_scaled + actual_network_energy
+            ),
+            "estimated_actual_total_latency": estimated_actual_total_latency,
+        }
+
+    return {
+        "estimated_total_energy_scaled": (
+            float(mapping_cost_summary["proxy_non_network_energy_scaled"])
+            + float(network_summary["total_energy"])
+        ),
+        "estimated_total_latency": float(total_latency),
+        "network_only_total_energy": float(network_summary["total_energy"]),
+        "network_only_total_latency": float(network_summary["total_latency"]),
+        "network_only_total_bytes": float(network_summary["total_bytes"]),
+        "per_einsum": per_einsum,
+    }
+
+
+def _collective_signature(decisions):
+    return sorted(
+        (
+            decision["einsum"],
+            decision["tensor_name"],
+            decision["collective_type"],
+            decision["proxy_action"],
+            tuple(decision.get("chip_sharded_ranks", [])),
+        )
+        for decision in decisions
+    )
+
+
+def _build_milestone2_topology_summary(topology_result):
+    iterations = topology_result["feedback_iterations"]
+    if not iterations:
+        return {}
+
+    trace = []
+    previous_mapping_hash = None
+    previous_collective_signature = None
+    for iteration in iterations:
+        mapping_hash = iteration["mapping"]["mapping_sha256"]
+        collective_signature = _collective_signature(iteration["collective_decisions"])
+        trace.append(
+            {
+                "iteration": iteration["iteration"],
+                "mapping_yaml_path": iteration["mapping"]["mapping_yaml_path"],
+                "mapping_sha256": mapping_hash,
+                "mapping_changed_from_previous": (
+                    None
+                    if previous_mapping_hash is None
+                    else mapping_hash != previous_mapping_hash
+                ),
+                "collective_plan_changed_from_previous": (
+                    None
+                    if previous_collective_signature is None
+                    else collective_signature != previous_collective_signature
+                ),
+                "input_network_proxies": iteration["input_network_proxies"],
+                "updated_network_proxies": iteration["updated_network_proxies"],
+                "raw_relative_change": iteration["raw_relative_change"],
+                "applied_relative_change": iteration["applied_relative_change"],
+                "proxy_model_total_energy_scaled": iteration["mapping"]["cost_summary"][
+                    "proxy_total_energy_scaled"
+                ],
+                "proxy_model_total_latency": iteration["mapping"]["cost_summary"][
+                    "proxy_total_latency"
+                ],
+                "actual_network_total_energy": iteration["network"]["actual_summary"][
+                    "total_energy"
+                ],
+                "actual_network_total_latency": iteration["network"]["actual_summary"][
+                    "total_latency"
+                ],
+                "actual_network_total_bytes": iteration["network"]["actual_summary"][
+                    "total_bytes"
+                ],
+                "estimated_actual_total_energy_scaled": iteration[
+                    "estimated_actual_system"
+                ]["estimated_total_energy_scaled"],
+                "estimated_actual_total_latency": iteration[
+                    "estimated_actual_system"
+                ]["estimated_total_latency"],
+                "allgather_pct": iteration["allgather_pct"],
+            }
+        )
+        previous_mapping_hash = mapping_hash
+        previous_collective_signature = collective_signature
+
+    first_iteration = iterations[0]
+    final_iteration = iterations[-1]
+
+    return {
+        "feedback_converged": topology_result["feedback_converged"],
+        "iteration_count": len(iterations),
+        "baseline_without_network_model": {
+            "iteration": first_iteration["iteration"],
+            "mapping_yaml_path": first_iteration["mapping"]["mapping_yaml_path"],
+            "mapping_sha256": first_iteration["mapping"]["mapping_sha256"],
+            "network_proxies_used": first_iteration["input_network_proxies"],
+            "proxy_model": first_iteration["mapping"]["cost_summary"],
+        },
+        "first_run_with_actual_network_applied": {
+            "iteration": first_iteration["iteration"],
+            "mapping_yaml_path": first_iteration["mapping"]["mapping_yaml_path"],
+            "mapping_sha256": first_iteration["mapping"]["mapping_sha256"],
+            "proxy_model": first_iteration["mapping"]["cost_summary"],
+            "actual_network": first_iteration["network"]["actual_summary"],
+            "estimated_actual_system": first_iteration["estimated_actual_system"],
+            "collective_decisions": first_iteration["collective_decisions"],
+        },
+        "final_stabilized_mapping": {
+            "iteration": final_iteration["iteration"],
+            "mapping_yaml_path": final_iteration["mapping"]["mapping_yaml_path"],
+            "mapping_sha256": final_iteration["mapping"]["mapping_sha256"],
+            "network_proxies_used": final_iteration["input_network_proxies"],
+            "final_network_proxies": topology_result["final_network_proxies"],
+            "proxy_model": final_iteration["mapping"]["cost_summary"],
+            "actual_network": final_iteration["network"]["actual_summary"],
+            "estimated_actual_system": final_iteration["estimated_actual_system"],
+            "collective_decisions": final_iteration["collective_decisions"],
+        },
+        "changes": {
+            "mapping_hash_changed_first_to_final": (
+                first_iteration["mapping"]["mapping_sha256"]
+                != final_iteration["mapping"]["mapping_sha256"]
+            ),
+            "collective_plan_changed_first_to_final": (
+                _collective_signature(first_iteration["collective_decisions"])
+                != _collective_signature(final_iteration["collective_decisions"])
+            ),
+            "without_network_proxy_to_first_actual": {
+                "energy": _delta_summary(
+                    first_iteration["mapping"]["cost_summary"][
+                        "proxy_total_energy_scaled"
+                    ],
+                    first_iteration["estimated_actual_system"][
+                        "estimated_total_energy_scaled"
+                    ],
+                ),
+                "latency": _delta_summary(
+                    first_iteration["mapping"]["cost_summary"]["proxy_total_latency"],
+                    first_iteration["estimated_actual_system"]["estimated_total_latency"],
+                ),
+            },
+            "first_actual_to_final_actual": {
+                "energy": _delta_summary(
+                    first_iteration["estimated_actual_system"][
+                        "estimated_total_energy_scaled"
+                    ],
+                    final_iteration["estimated_actual_system"][
+                        "estimated_total_energy_scaled"
+                    ],
+                ),
+                "latency": _delta_summary(
+                    first_iteration["estimated_actual_system"]["estimated_total_latency"],
+                    final_iteration["estimated_actual_system"]["estimated_total_latency"],
+                ),
+            },
+            "without_network_proxy_to_final_actual": {
+                "energy": _delta_summary(
+                    first_iteration["mapping"]["cost_summary"][
+                        "proxy_total_energy_scaled"
+                    ],
+                    final_iteration["estimated_actual_system"][
+                        "estimated_total_energy_scaled"
+                    ],
+                ),
+                "latency": _delta_summary(
+                    first_iteration["mapping"]["cost_summary"]["proxy_total_latency"],
+                    final_iteration["estimated_actual_system"]["estimated_total_latency"],
+                ),
+            },
+        },
+        "convergence_trace": trace,
+    }
+
+
+def _build_milestone2_payload(
+    run_dir: Path,
+    results,
+    topology_summaries,
+    args,
+    workloads_dir: Path,
+):
+    workload_entries = []
+    aggregate = defaultdict(
+        lambda: {
+            "count": 0,
+            "final_estimated_total_energy_scaled_sum": 0.0,
+            "final_estimated_total_latency_sum": 0.0,
+        }
+    )
+    best_latency_topology_counts = defaultdict(int)
+    best_energy_topology_counts = defaultdict(int)
+
+    for workload_result in results:
+        topology_entries = {}
+        final_latency_by_topology = {}
+        final_energy_by_topology = {}
+
+        for topology_name, topology_result in workload_result["topologies"].items():
+            summary = _build_milestone2_topology_summary(topology_result)
+            topology_entries[topology_name] = summary
+            final_entry = summary["final_stabilized_mapping"]["estimated_actual_system"]
+            final_energy = float(final_entry["estimated_total_energy_scaled"])
+            final_latency = float(final_entry["estimated_total_latency"])
+            final_energy_by_topology[topology_name] = final_energy
+            final_latency_by_topology[topology_name] = final_latency
+            aggregate[topology_name]["count"] += 1
+            aggregate[topology_name]["final_estimated_total_energy_scaled_sum"] += final_energy
+            aggregate[topology_name]["final_estimated_total_latency_sum"] += final_latency
+
+        best_latency_topology = min(final_latency_by_topology, key=final_latency_by_topology.get)
+        best_energy_topology = min(final_energy_by_topology, key=final_energy_by_topology.get)
+        best_latency_topology_counts[best_latency_topology] += 1
+        best_energy_topology_counts[best_energy_topology] += 1
+
+        workload_entries.append(
+            {
+                "desc": workload_result["desc"],
+                "workload_path": workload_result["workload_path"],
+                "params": workload_result["params"],
+                "topologies": topology_entries,
+                "cross_topology": {
+                    "best_final_latency_topology": best_latency_topology,
+                    "best_final_energy_topology": best_energy_topology,
+                    "final_latency_rankings": [
+                        {"topology": name, "estimated_total_latency": value}
+                        for name, value in sorted(
+                            final_latency_by_topology.items(), key=lambda item: item[1]
+                        )
+                    ],
+                    "final_energy_rankings": [
+                        {"topology": name, "estimated_total_energy_scaled": value}
+                        for name, value in sorted(
+                            final_energy_by_topology.items(), key=lambda item: item[1]
+                        )
+                    ],
+                },
+            }
+        )
+
+    return {
+        "run_timestamp": datetime.now().astimezone().isoformat(),
+        "source_results_json": str(Path(run_dir.name) / "results.json"),
+        "milestone": "Milestone 2",
+        "questions": [
+            "How much is the difference between the energy with and without the network model?",
+            "How much is the difference between the first run of the mapper, but including the network energy and latency costs, and the final mapper run?",
+        ],
+        "methodology": {
+            "baseline_without_network_model": (
+                "Iteration 1 mapper cost with the initial logical NetworkMemory "
+                "proxy values before topology-aware feedback."
+            ),
+            "first_run_with_actual_network_applied": (
+                "Iteration 1 mapping, with the actual topology-model network "
+                "energy and latency substituted for the proxy NetworkMemory cost."
+            ),
+            "final_stabilized_mapping": (
+                "Last feedback-loop iteration after the network proxy values stop "
+                "changing or the max-iteration limit is reached."
+            ),
+            "energy_note": (
+                "AccelForge energies come from the 2-chip mapping run and are scaled "
+                f"by {SCALE:.0f}x to estimate the 64-chip system."
+            ),
+            "latency_note": (
+                "Estimated actual total latency is reconstructed per einsum as "
+                "max(non-network bottleneck latency, assigned network latency), "
+                "then summed across einsums. The congested network-only latency from "
+                "the topology model is also reported separately."
+            ),
+        },
+        "accelforge_root": str(ACCELFORGE.resolve()),
+        "workloads_dir": str(workloads_dir),
+        "architecture_yaml": str(ARCH),
+        "map_chips": MAP_CHIPS,
+        "eval_chips": EVAL_CHIPS,
+        "scale": SCALE,
+        "feedback_loop": {
+            "max_proxy_iters": MAX_PROXY_ITERS,
+            "damping_enabled": args.damping,
+            "proxy_damping": PROXY_DAMPING,
+            "proxy_rel_tol": PROXY_REL_TOL,
+            "initial_network_proxies": _initial_network_proxies(),
+        },
+        "topology_summaries": topology_summaries,
+        "aggregate_topology_summary": {
+            topology_name: {
+                "num_workloads": values["count"],
+                "avg_final_estimated_total_energy_scaled": (
+                    values["final_estimated_total_energy_scaled_sum"] / values["count"]
+                    if values["count"] > 0
+                    else 0.0
+                ),
+                "avg_final_estimated_total_latency": (
+                    values["final_estimated_total_latency_sum"] / values["count"]
+                    if values["count"] > 0
+                    else 0.0
+                ),
+                "best_final_latency_wins": best_latency_topology_counts.get(
+                    topology_name, 0
+                ),
+                "best_final_energy_wins": best_energy_topology_counts.get(
+                    topology_name, 0
+                ),
+            }
+            for topology_name, values in sorted(aggregate.items())
+        },
+        "workloads": workload_entries,
     }
 
 
@@ -563,7 +1094,7 @@ def map_and_extract(path, params, network_proxies, af, map_workload_to_arch):
         mappings = map_workload_to_arch(spec)
     energy_bk = mappings.energy(per_component=True)
     compute_e = float(sum(v for k, v in energy_bk.items() if k != "NetworkMemory")) * SCALE
-    compute_l = float(mappings.latency())
+    total_mapping_latency = float(mappings.latency())
     actions = mappings.actions(per_einsum=True, per_component=True, per_tensor=True)
     energy_details = mappings.energy(
         per_einsum=True, per_component=True, per_tensor=True, per_action=True
@@ -571,6 +1102,9 @@ def map_and_extract(path, params, network_proxies, af, map_workload_to_arch):
     latency_details = mappings.latency(per_einsum=True, per_component=True)
     mapping = mappings.mapping(0)
     mapping_yaml = _mapping_to_yaml(mapping)
+    mapping_cost_summary = _summarize_mapping_costs(
+        total_mapping_latency, energy_details, latency_details
+    )
     compute_components = {
         compute.einsum: compute.component for compute in mapping.get_nodes_of_type(Compute)
     }
@@ -670,11 +1204,13 @@ def map_and_extract(path, params, network_proxies, af, map_workload_to_arch):
 
     return {
         "compute_energy": compute_e,
-        "compute_latency": compute_l,
+        "compute_latency": total_mapping_latency,
         "transfers": transfers,
         "collective_decisions": collective_decisions,
         "network_proxies": dict(network_proxies),
         "mapping_yaml": mapping_yaml,
+        "mapping_sha256": _mapping_sha256(mapping_yaml),
+        "mapping_cost_summary": mapping_cost_summary,
         "mapping_energy": _json_ready(energy_details),
         "mapping_latency": _json_ready(latency_details),
         "mapping_actions": _json_ready(actions),
@@ -712,6 +1248,10 @@ def run_feedback_loop(
         collective_decisions = _annotate_collective_decisions(
             mapping_result["collective_decisions"], network_result
         )
+        network_summary = _summarize_actual_network(collective_decisions, network_result)
+        estimated_actual_system = _estimate_actual_system_cost(
+            mapping_result["mapping_cost_summary"], network_summary
+        )
         proposed_proxies = _updated_network_proxies(
             network_proxies, collective_decisions, network_result
         )
@@ -734,6 +1274,8 @@ def run_feedback_loop(
                     "compute_energy": float(mapping_result["compute_energy"]),
                     "compute_latency": float(mapping_result["compute_latency"]),
                     "mapping_yaml_path": mapping_yaml_relpath,
+                    "mapping_sha256": mapping_result["mapping_sha256"],
+                    "cost_summary": mapping_result["mapping_cost_summary"],
                     "mapping_energy": mapping_result["mapping_energy"],
                     "mapping_latency": mapping_result["mapping_latency"],
                     "mapping_actions": mapping_result["mapping_actions"],
@@ -745,11 +1287,13 @@ def run_feedback_loop(
                     "latency_per_network_access": float(network_result.latency_per_network_access),
                     "total_network_bytes": float(network_result.total_network_bytes),
                     "per_transfer": _json_ready(network_result.per_transfer),
+                    "actual_summary": network_summary,
                 },
                 "transfer_count": len(mapping_result["transfers"]),
                 "total_bytes": total_bytes,
                 "allgather_pct": allgather_pct,
                 "collective_decisions": collective_decisions,
+                "estimated_actual_system": estimated_actual_system,
             }
         )
 
@@ -1030,7 +1574,13 @@ def main():
         print(f"\nSaved results to {combo_path}")
     else:
         results_path = save_results_in_dir(run_dir, payload)
+        milestone2_path = save_named_json_in_dir(
+            run_dir,
+            "milestone2_analysis.json",
+            _build_milestone2_payload(run_dir, results, topology_summaries, args, workloads_dir),
+        )
         print(f"\nSaved results to {results_path}")
+        print(f"Saved milestone 2 analysis to {milestone2_path}")
 
     print("\nDone!")
 

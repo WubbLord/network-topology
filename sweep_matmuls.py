@@ -86,6 +86,30 @@ def _serialize_transfer(transfer: NetworkTransfer):
     }
 
 
+def _all_eval_chips() -> list[int]:
+    return list(range(EVAL_CHIPS))
+
+
+def _network_transfer_from_decision(decision) -> NetworkTransfer:
+    collective_type = CollectiveType[decision["collective_type"]]
+    kwargs = {}
+    if collective_type == CollectiveType.BROADCAST:
+        kwargs["src_chip"] = 0
+        kwargs["dst_chips"] = [chip for chip in _all_eval_chips() if chip != 0]
+    elif collective_type in (
+        CollectiveType.ALLREDUCE,
+        CollectiveType.REDUCE_SCATTER,
+        CollectiveType.ALLGATHER,
+    ):
+        kwargs["participating_chips"] = _all_eval_chips()
+    return NetworkTransfer(
+        tensor_name=f"{decision['einsum']}:{decision['tensor_name']}",
+        data_bytes=decision["data_bytes"],
+        collective_type=collective_type,
+        **kwargs,
+    )
+
+
 def save_results(payload: dict) -> Path:
     out_dir = make_run_dir()
     out_path = out_dir / "results.json"
@@ -1174,13 +1198,7 @@ def map_and_extract(path, params, network_proxies, af, map_workload_to_arch):
         for decision in decisions:
             if decision["collective_type"] is None or decision["data_bytes"] <= 0:
                 continue
-            transfers.append(
-                NetworkTransfer(
-                    tensor_name=f"{decision['einsum']}:{decision['tensor_name']}",
-                    data_bytes=decision["data_bytes"],
-                    collective_type=CollectiveType[decision["collective_type"]],
-                )
-            )
+            transfers.append(_network_transfer_from_decision(decision))
 
     # Fallback: if sharding-based inference produced nothing, emit raw transfers
     # for every NetworkMemory access. Reads → BROADCAST, writes → ALLREDUCE.
@@ -1193,6 +1211,8 @@ def map_and_extract(path, params, network_proxies, af, map_workload_to_arch):
                     tensor_name=f"{einsum_name}:{tensor}",
                     data_bytes=float(nbytes),
                     collective_type=CollectiveType.BROADCAST,
+                    src_chip=0,
+                    dst_chips=[chip for chip in _all_eval_chips() if chip != 0],
                 ))
         for (einsum_name, tensor), nbytes in network_writes.items():
             if nbytes > 0:
@@ -1200,6 +1220,7 @@ def map_and_extract(path, params, network_proxies, af, map_workload_to_arch):
                     tensor_name=f"{einsum_name}:{tensor}",
                     data_bytes=float(nbytes),
                     collective_type=CollectiveType.ALLREDUCE,
+                    participating_chips=_all_eval_chips(),
                 ))
 
     return {

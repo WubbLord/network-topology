@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from network_topology.cost_model import CollectiveType
 
 from sweep_matmuls import (
+    EVAL_CHIPS,
     SCALE,
     _build_milestone2_topology_summary,
     _annotate_collective_decisions,
@@ -10,6 +11,7 @@ from sweep_matmuls import (
     _estimate_actual_system_cost,
     _infer_matmul_collectives,
     _initial_network_proxies,
+    _network_transfer_from_decision,
     _summarize_mapping_costs,
     _summarize_actual_network,
     _updated_network_proxies,
@@ -58,6 +60,9 @@ def test_one_contracting_shard_uses_allgather():
     assert decisions[0]["collective_type"] == CollectiveType.ALLGATHER.name
     assert decisions[0]["tensor_name"] == "A"
     assert decisions[0]["proxy_action"] == "read"
+
+    transfer = _network_transfer_from_decision(decisions[0])
+    assert transfer.participating_chips == list(range(EVAL_CHIPS))
 
 
 def test_shared_contracting_shard_uses_allreduce():

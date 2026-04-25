@@ -170,10 +170,20 @@ class Topology:
         path = self._get_path(src, dst)
         return [(path[i], path[i + 1]) for i in range(len(path) - 1)]
 
+    def _is_full_participation(self, participating_chips: Optional[list[int]]) -> bool:
+        if participating_chips is None:
+            return True
+        return set(participating_chips) == set(range(self.num_chips))
+
+    def _is_full_broadcast(self, src: int, dst_chips: Optional[list[int]]) -> bool:
+        if dst_chips is None:
+            return True
+        return set(dst_chips) == (set(range(self.num_chips)) - {src})
+
     # --- Generic link-load routing (overridden by subclasses) ---
 
     def _broadcast_link_loads(self, data_bytes: float, src: int, dst_chips: list[int]) -> LinkLoads:
-        """BFS spanning tree broadcast. Interior links carry data_bytes * subtree_size."""
+        """BFS spanning tree broadcast. Each used tree edge carries one copy."""
         if not dst_chips:
             return {}
         dst_set = set(dst_chips)
@@ -191,15 +201,15 @@ class Topology:
                         next_queue.append(neighbor)
                         dst_set.discard(neighbor)
             queue = next_queue
-        subtree_count = defaultdict(int)
+        tree_edges = set()
         for dst in dst_chips:
             node = dst
             while node in parent:
                 p = parent[node]
-                subtree_count[(p, node)] += 1
+                tree_edges.add((p, node))
                 node = p
-        for (p, c), count in subtree_count.items():
-            loads[(p, c)] += data_bytes * count
+        for p, c in tree_edges:
+            loads[(p, c)] += data_bytes
         return dict(loads)
 
     def _allreduce_link_loads(self, data_bytes: float, participating_chips: list[int]) -> LinkLoads:
@@ -298,6 +308,8 @@ class Ring(Topology):
                          energy_per_bit_per_hop, per_hop_latency, full_duplex)
 
     def _allreduce_link_loads(self, data_bytes, participating_chips=None):
+        if not self._is_full_participation(participating_chips):
+            return Topology._allreduce_link_loads(self, data_bytes, participating_chips)
         n = self.num_chips if participating_chips is None else len(participating_chips)
         if n <= 1:
             return {}
@@ -305,6 +317,8 @@ class Ring(Topology):
         return {(i, (i + 1) % self.num_chips): bpl for i in range(self.num_chips)}
 
     def _broadcast_link_loads(self, data_bytes, src, dst_chips):
+        if not self._is_full_broadcast(src, dst_chips):
+            return Topology._broadcast_link_loads(self, data_bytes, src, dst_chips)
         if not dst_chips:
             return {}
         n = self.num_chips
@@ -354,6 +368,8 @@ class Mesh3D(Topology):
         Compare to ring AllReduce (torus) where wraparound links allow each
         link to carry only 2*(d-1)/d * data — a factor of d/(d-1) better.
         """
+        if not self._is_full_participation(participating_chips):
+            return Topology._allreduce_link_loads(self, data_bytes, participating_chips)
         dx, dy, dz = self.dims
         n = dx * dy * dz
         if n <= 1:
@@ -378,6 +394,8 @@ class Mesh3D(Topology):
         return dict(loads)
 
     def _broadcast_link_loads(self, data_bytes, src, dst_chips):
+        if not self._is_full_broadcast(src, dst_chips):
+            return Topology._broadcast_link_loads(self, data_bytes, src, dst_chips)
         dx, dy, dz = self.dims
         loads: dict[tuple[int,int], float] = {}
         sc = _flat_to_coords(src, self.dims)
@@ -436,6 +454,8 @@ class Torus3D(Topology):
                          energy_per_bit_per_hop, per_hop_latency, full_duplex)
 
     def _allreduce_link_loads(self, data_bytes, participating_chips=None):
+        if not self._is_full_participation(participating_chips):
+            return Topology._allreduce_link_loads(self, data_bytes, participating_chips)
         dx, dy, dz = self.dims
         n = dx * dy * dz
         if n <= 1:
@@ -452,6 +472,8 @@ class Torus3D(Topology):
         return dict(loads)
 
     def _broadcast_link_loads(self, data_bytes, src, dst_chips):
+        if not self._is_full_broadcast(src, dst_chips):
+            return Topology._broadcast_link_loads(self, data_bytes, src, dst_chips)
         dx, dy, dz = self.dims
         loads: dict[tuple[int,int], float] = {}
         sc = _flat_to_coords(src, self.dims)
@@ -501,6 +523,8 @@ class TorusND(Topology):
                          energy_per_bit_per_hop, per_hop_latency, full_duplex)
 
     def _allreduce_link_loads(self, data_bytes, participating_chips=None):
+        if not self._is_full_participation(participating_chips):
+            return Topology._allreduce_link_loads(self, data_bytes, participating_chips)
         n = math.prod(self.dims)
         if n <= 1:
             return {}
@@ -516,6 +540,8 @@ class TorusND(Topology):
         return dict(loads)
 
     def _broadcast_link_loads(self, data_bytes, src, dst_chips):
+        if not self._is_full_broadcast(src, dst_chips):
+            return Topology._broadcast_link_loads(self, data_bytes, src, dst_chips)
         loads: dict[tuple[int, int], float] = {}
         sc = _flat_to_coords(src, self.dims)
 
@@ -587,6 +613,8 @@ class CirculantHD(Topology):
 
     def _allreduce_link_loads(self, data_bytes, participating_chips=None):
         """3-parallel-ring AllReduce over edge-disjoint Hamiltonian cycles."""
+        if not self._is_full_participation(participating_chips):
+            return Topology._allreduce_link_loads(self, data_bytes, participating_chips)
         n = self.num_chips
         if n <= 1:
             return {}
@@ -600,6 +628,8 @@ class CirculantHD(Topology):
 
     def _broadcast_link_loads(self, data_bytes, src, dst_chips):
         """BFS broadcast using only reverse-direction edges (no overlap with AllReduce)."""
+        if not self._is_full_broadcast(src, dst_chips):
+            return Topology._broadcast_link_loads(self, data_bytes, src, dst_chips)
         n = self.num_chips
         if not dst_chips:
             return {}

@@ -53,6 +53,15 @@ class NetworkCostResult:
         return "\n".join(lines)
 
 
+def _validate_chip_ids(topology: Topology, chips: list[int], field_name: str) -> None:
+    invalid = [chip for chip in chips if chip < 0 or chip >= topology.num_chips]
+    if invalid:
+        raise ValueError(
+            f"{field_name} contains chips outside topology range "
+            f"0..{topology.num_chips - 1}: {invalid}"
+        )
+
+
 def _get_transfer_link_loads(topology, transfer):
     all_chips = list(range(topology.num_chips))
     ct = transfer.collective_type
@@ -60,15 +69,21 @@ def _get_transfer_link_loads(topology, transfer):
     if ct == CollectiveType.BROADCAST:
         src = transfer.src_chip or 0
         dst = transfer.dst_chips or [i for i in all_chips if i != src]
+        _validate_chip_ids(topology, [src, *dst], "BROADCAST chips")
         return topology._broadcast_link_loads(transfer.data_bytes, src, dst)
     elif ct == CollectiveType.ALLREDUCE:
-        return topology._allreduce_link_loads(transfer.data_bytes, transfer.participating_chips or all_chips)
+        participants = transfer.participating_chips or all_chips
+        _validate_chip_ids(topology, participants, "ALLREDUCE participating_chips")
+        return topology._allreduce_link_loads(transfer.data_bytes, participants)
     elif ct in (CollectiveType.REDUCE_SCATTER, CollectiveType.ALLGATHER):
-        loads = topology._allreduce_link_loads(transfer.data_bytes, transfer.participating_chips or all_chips)
+        participants = transfer.participating_chips or all_chips
+        _validate_chip_ids(topology, participants, f"{ct.name} participating_chips")
+        loads = topology._allreduce_link_loads(transfer.data_bytes, participants)
         return {k: v / 2 for k, v in loads.items()}
     elif ct == CollectiveType.POINT_TO_POINT:
         src = transfer.src_chip or 0
         dst = transfer.dst_chips[0] if transfer.dst_chips else 1
+        _validate_chip_ids(topology, [src, dst], "POINT_TO_POINT chips")
         return topology._point_to_point_link_loads(transfer.data_bytes, src, dst)
     else:
         raise ValueError(f"Unknown collective type: {ct}")
@@ -97,6 +112,11 @@ def compute_network_cost(topology: Topology, transfers: list[NetworkTransfer]) -
             "collective": transfer.collective_type.name,
             "energy": indiv_energy, "latency": indiv_latency,
             "data_bytes": transfer.data_bytes,
+            "src_chip": transfer.src_chip,
+            "dst_chips": transfer.dst_chips,
+            "participating_chips": transfer.participating_chips,
+            "link_count": len(loads),
+            "max_link_load": max(loads.values(), default=0.0),
         })
         total_bytes += transfer.data_bytes
 

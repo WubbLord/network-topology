@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from network_topology import compute_network_cost, make_tpu_v4_topology
 from network_topology.cost_model import CollectiveType, NetworkTransfer
@@ -54,3 +55,59 @@ def test_reduce_scatter_and_allgather_are_half_of_allreduce_on_ring():
     assert reduce_scatter_latency == allreduce_latency / 2
     assert allgather_energy == reduce_scatter_energy
     assert allgather_latency == reduce_scatter_latency
+
+
+def test_broadcast_tree_edges_carry_one_copy_each():
+    topo = Custom(
+        adj_matrix=np.array(
+            [
+                [0, 1, 0],
+                [1, 0, 1],
+                [0, 1, 0],
+            ]
+        ),
+        link_bandwidth=10.0,
+        energy_per_bit_per_hop=1.0,
+        per_hop_latency=0.0,
+    )
+
+    loads = topo._broadcast_link_loads(10.0, src=0, dst_chips=[1, 2])
+
+    assert loads == {(0, 1): 10.0, (1, 2): 10.0}
+
+
+def test_optimized_topologies_fall_back_for_partial_collectives():
+    topo = Ring(
+        num_chips=4,
+        link_bandwidth=1.0,
+        energy_per_bit_per_hop=1.0,
+        per_hop_latency=0.0,
+    )
+
+    allreduce_loads = topo._allreduce_link_loads(8.0, participating_chips=[0, 1])
+    broadcast_loads = topo._broadcast_link_loads(8.0, src=0, dst_chips=[1])
+
+    assert allreduce_loads == {(0, 1): 8.0, (1, 0): 8.0}
+    assert broadcast_loads == {(0, 1): 8.0}
+
+
+def test_compute_network_cost_rejects_chips_outside_topology():
+    topo = Ring(
+        num_chips=4,
+        link_bandwidth=1.0,
+        energy_per_bit_per_hop=1.0,
+        per_hop_latency=0.0,
+    )
+
+    with pytest.raises(ValueError, match="outside topology range"):
+        compute_network_cost(
+            topo,
+            [
+                NetworkTransfer(
+                    "bad",
+                    8.0,
+                    CollectiveType.ALLREDUCE,
+                    participating_chips=[0, 4],
+                )
+            ],
+        )

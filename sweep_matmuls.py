@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
 """
-Topology sweep: evaluate workloads on multiple topologies with congestion modeling.
+Topology sweep: evaluate workloads on multiple topologies.
 
-Maps on 2 chips (fast), scales data movement to 64 chips, evaluates on 5 topologies.
+Maps on 8 chips, scales data movement to 64 chips, and evaluates candidate topologies.
 
 Usage:
-    ACCELFORGE_ROOT=/path/to/accelforge .venv/bin/python sweep_gpt3.py [--damping]
+    ACCELFORGE_ROOT=/path/to/accelforge .venv/bin/python sweep_matmuls.py [--damping]
 """
 
 import argparse
 import contextlib
-import copy
 import hashlib
 import json
 import logging
@@ -18,6 +17,7 @@ import os
 import re
 import sys
 import time
+import traceback
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
@@ -52,9 +52,9 @@ TOPOLOGIES = {
     "Torus 8x2x4": Torus3D(dims=(8, 2, 4), **hw),
     "Ring 64": Ring(num_chips=64, **hw),
     # Higher-dimensional tori (proposed topologies for Milestone 3)
-    "4D Torus 4x4x2x2": TorusND(dims=(4, 4, 2, 2), **hw),     # 8 links/chip
-    "5D Torus 4x2x2x2x2": TorusND(dims=(4, 2, 2, 2, 2), **hw), # 10 links/chip
-    "6D Hypercube": TorusND(dims=(2, 2, 2, 2, 2, 2), **hw),     # 12 links/chip
+    "4D Torus 4x4x2x2": TorusND(dims=(4, 4, 2, 2), **hw),     # 6 links/chip
+    "5D Torus 4x2x2x2x2": TorusND(dims=(4, 2, 2, 2, 2), **hw), # 6 links/chip
+    "6D Hypercube": TorusND(dims=(2, 2, 2, 2, 2, 2), **hw),     # 6 links/chip
     # Optimal circulant (Milestone 3 proposal — same 6 links/chip as Torus)
     "Circulant {1,5,17}": CirculantHD(64, (1, 5, 17), **hw),   # 6 links/chip, 2.29x faster AR
 }
@@ -234,43 +234,40 @@ def _tensor_rank_vars(einsum, tensor_name):
     raise KeyError(f"Tensor {tensor_name} not found in Einsum {einsum.name}")
 
 
-def _chip_sharded_rank_vars(mapping, flattened_arch, tensor_name, tensor_rank_vars):
-    from accelforge.frontend.mapping.mapping import (
-        MappingNodeWithChildren,
-        Reservation,
-        Spatial,
-        TensorHolder,
-    )
+def _rank_var_set(value):
+    if isinstance(value, (set, frozenset, list, tuple)):
+        return {str(v) for v in value}
+    return {str(value)}
 
-    def _normalize_single_tensor_nodes(node):
-        if isinstance(node, MappingNodeWithChildren):
-            normalized = []
-            for child in node.nodes:
-                if isinstance(child, TensorHolder) and len(child.tensors) > 1:
-                    for tensor in child.tensors:
-                        new_child = copy.copy(child)
-                        new_child.tensors = [tensor]
-                        normalized.append(new_child)
-                elif isinstance(child, Reservation) and len(child.purposes) > 1:
-                    for purpose in child.purposes:
-                        new_child = copy.copy(child)
-                        new_child.purposes = [purpose]
-                        normalized.append(new_child)
-                else:
-                    _normalize_single_tensor_nodes(child)
-                    normalized.append(child)
-            node.nodes = normalized
 
-    mapping_copy = copy.deepcopy(mapping)
-    _normalize_single_tensor_nodes(mapping_copy)
-    tensor_mapping = mapping_copy._get_single_tensor_mapping(
-        tensor_name, flattened_arch, tensor_rank_vars
-    )
-    return {
-        s.rank_variable
-        for s in tensor_mapping.get_nodes_of_type(Spatial)
-        if s.component == "ChipArray"
-    }
+def _spatial_rank_vars_for_einsum(spatial, einsum_name):
+    einsum_to_rank_variables = getattr(spatial, "_einsum_to_rank_variables", None) or {}
+    if einsum_to_rank_variables:
+        for key, value in einsum_to_rank_variables.items():
+            if str(key) == str(einsum_name):
+                return _rank_var_set(value)
+        return set()
+    return _rank_var_set(spatial.rank_variable)
+
+
+def _chip_sharded_rank_vars(einsum_name, mapping, tensor_rank_vars):
+    from accelforge.frontend.mapping.mapping import Spatial
+
+    tensor_rank_vars = {str(rank_var) for rank_var in tensor_rank_vars}
+    sharded = set()
+    for spatial in mapping.get_nodes_of_type(Spatial):
+        if spatial.component != "ChipArray":
+            continue
+        if getattr(spatial, "_constrained_to_one", False):
+            continue
+        if getattr(spatial, "calculated_n_iterations", None) == 1:
+            continue
+        sharded.update(
+            rank_var
+            for rank_var in _spatial_rank_vars_for_einsum(spatial, einsum_name)
+            if rank_var in tensor_rank_vars
+        )
+    return sharded
 
 
 def _effective_transfer_bytes(raw_bytes, tensor_size_bytes):
@@ -791,14 +788,14 @@ def _build_milestone2_payload(
                 "changing or the max-iteration limit is reached."
             ),
             "energy_note": (
-                "AccelForge energies come from the 2-chip mapping run and are scaled "
+                "AccelForge energies come from the 8-chip mapping run and are scaled "
                 f"by {SCALE:.0f}x to estimate the 64-chip system."
             ),
             "latency_note": (
                 "Estimated actual total latency is reconstructed per einsum as "
                 "max(non-network bottleneck latency, assigned network latency), "
-                "then summed across einsums. The congested network-only latency from "
-                "the topology model is also reported separately."
+                "then summed across einsums. The network-only latency is the sum "
+                "of independently costed collective latencies."
             ),
         },
         "accelforge_root": str(ACCELFORGE.resolve()),
@@ -854,15 +851,6 @@ def _annotate_collective_decisions(decisions, network_result):
     per_transfer = {
         transfer["tensor"]: transfer for transfer in network_result.per_transfer
     }
-    max_individual_latency = max(
-        (float(transfer["latency"]) for transfer in network_result.per_transfer),
-        default=0.0,
-    )
-    congestion_scale = (
-        float(network_result.total_latency) / max_individual_latency
-        if max_individual_latency > 0
-        else 1.0
-    )
 
     annotated = []
     for decision in decisions:
@@ -879,7 +867,7 @@ def _annotate_collective_decisions(decisions, network_result):
             annotated_decision["estimated_network_energy_per_byte"] = 0.0
             annotated_decision["estimated_network_latency_per_byte"] = 0.0
         else:
-            estimated_latency = float(transfer["latency"]) * congestion_scale
+            estimated_latency = float(transfer["latency"])
             annotated_decision["estimated_network_energy"] = float(transfer["energy"])
             annotated_decision["estimated_network_latency"] = estimated_latency
             annotated_decision["estimated_network_energy_per_byte"] = (
@@ -942,6 +930,43 @@ def _make_collective_decision(
         "tensor_ranks": sorted(tensor_ranks),
         "chip_sharded_ranks": sorted(chip_sharded_ranks),
     }
+
+
+def _fallback_network_access_decisions(
+    einsum_name,
+    tensor_infos,
+    read_bytes,
+    write_bytes,
+    read_collective_type=CollectiveType.ALLGATHER,
+    reason_prefix="Fallback NetworkMemory model",
+):
+    decisions = []
+    for name, info in tensor_infos.items():
+        rbytes = float(read_bytes.get(name, 0.0))
+        wbytes = float(write_bytes.get(name, 0.0))
+        if rbytes > 0 and not info["is_output"]:
+            decisions.append(_make_collective_decision(
+                einsum_name,
+                name,
+                read_collective_type,
+                "read",
+                rbytes,
+                f"{reason_prefix}: treating read as {read_collective_type.name}",
+                info["tensor_ranks"],
+                info["chip_sharded_ranks"],
+            ))
+        if wbytes > 0 and info["is_output"]:
+            decisions.append(_make_collective_decision(
+                einsum_name,
+                name,
+                CollectiveType.ALLREDUCE,
+                "write",
+                wbytes,
+                f"{reason_prefix}: treating write as ALLREDUCE",
+                info["tensor_ranks"],
+                info["chip_sharded_ranks"],
+            ))
+    return decisions
 
 
 def _infer_matmul_collectives(einsum_name, tensor_infos, read_bytes, write_bytes, tensor_size_bytes):
@@ -1070,33 +1095,57 @@ def load_accelforge(accelforge_root: Path):
     try:
         import accelforge as af
         from accelforge.mapper.FFM import map_workload_to_arch
+        from accelforge.util import set_n_parallel_jobs
     except ModuleNotFoundError as exc:
         raise SystemExit(
             "Unable to import accelforge. Install it in the active environment or "
             "point ACCELFORGE_ROOT at a local checkout."
         ) from exc
 
+    n_jobs = os.environ.get("ACCELFORGE_N_JOBS") or os.environ.get("SLURM_CPUS_PER_TASK")
+    if n_jobs:
+        try:
+            parsed_n_jobs = int(n_jobs)
+        except ValueError:
+            print(f"WARNING: ignoring invalid AccelForge parallelism value: {n_jobs!r}")
+        else:
+            if parsed_n_jobs > 0:
+                set_n_parallel_jobs(parsed_n_jobs, print_message=True)
+
     return af, map_workload_to_arch
 
 
 def make_workloads(workloads_dir: Path):
     return [
+        # === AccelForge transformer workload templates ===
+        ("GPT3 175B", workloads_dir / "gpt3_175B.yaml", {}),
+
+        # === Smaller matmuls for faster debugging/sanity sweeps ===
+        ("Small 2Kx8K", workloads_dir / "matmuls.yaml",
+         {"N_EINSUMS": 1, "M": 2048, "KN": 8192}),
+        ("Small 4Kx16K", workloads_dir / "matmuls.yaml",
+         {"N_EINSUMS": 1, "M": 4096, "KN": 16384}),
+        ("Medium 8Kx32K", workloads_dir / "matmuls.yaml",
+         {"N_EINSUMS": 1, "M": 8192, "KN": 32768}),
+        ("Medium 16Kx32K", workloads_dir / "matmuls.yaml",
+         {"N_EINSUMS": 1, "M": 16384, "KN": 32768}),
+
         # === Giant matmuls that force chip sharding (total working set > 32 GiB) ===
-        # Square: T0=16GB, W0=16GB, T1=16GB → 48 GB total
-        ("Square 128Kx128K", workloads_dir / "matmuls.yaml",
-         {"N_EINSUMS": 1, "M": 131072, "KN": 131072}),
         # Wide (FFN-like): T0=2GB, W0=69GB, T1=2GB → W0 alone forces sharding
         ("Wide 8Kx256K", workloads_dir / "matmuls.yaml",
          {"N_EINSUMS": 1, "M": 8192, "KN": 262144}),
-        # Tall (activation-heavy): T0=17GB, W0=4GB, T1=17GB → 38 GB total
-        ("Tall 256Kx64K", workloads_dir / "matmuls.yaml",
-         {"N_EINSUMS": 1, "M": 262144, "KN": 65536}),
         # Very wide (decode-like): T0=0.5GB, W0=69GB, T1=0.5GB → weight-dominated
         ("VeryWide 2Kx256K", workloads_dir / "matmuls.yaml",
          {"N_EINSUMS": 1, "M": 2048, "KN": 262144}),
         # Rectangular: T0=8GB, W0=32GB, T1=8GB → mixed
         ("Rect 64Kx128K", workloads_dir / "matmuls.yaml",
          {"N_EINSUMS": 1, "M": 65536, "KN": 131072}),
+        # Square: T0=16GB, W0=16GB, T1=16GB → 48 GB total
+        ("Square 128Kx128K", workloads_dir / "matmuls.yaml",
+         {"N_EINSUMS": 1, "M": 131072, "KN": 131072}),
+        # Tall (activation-heavy): T0=17GB, W0=4GB, T1=17GB → 38 GB total
+        ("Tall 256Kx64K", workloads_dir / "matmuls.yaml",
+         {"N_EINSUMS": 1, "M": 262144, "KN": 65536}),
         # Large square (2x bigger): T0=64GB, W0=64GB, T1=64GB → heavily sharded
         ("LargeSquare 256Kx256K", workloads_dir / "matmuls.yaml",
          {"N_EINSUMS": 1, "M": 262144, "KN": 262144}),
@@ -1148,10 +1197,10 @@ def map_and_extract(path, params, network_proxies, af, map_workload_to_arch):
 
     transfers = []
     collective_decisions = []
+    raw_network_access_decisions = []
 
     for einsum_name in mappings.einsum_names:
         einsum = spec.workload.einsums[einsum_name]
-        flat_arch = mappings.flattened_arches[(einsum_name, compute_components[einsum_name])]
         tensor_infos = {}
         for tensor_access in einsum.tensor_accesses:
             tensor_ranks = _tensor_rank_vars(einsum, tensor_access.name)
@@ -1159,40 +1208,46 @@ def map_and_extract(path, params, network_proxies, af, map_workload_to_arch):
                 "name": tensor_access.name,
                 "tensor_ranks": tensor_ranks,
                 "chip_sharded_ranks": _chip_sharded_rank_vars(
-                    mapping, flat_arch, tensor_access.name, tensor_ranks
+                    einsum_name, mapping, tensor_ranks
                 ),
                 "is_output": tensor_access.output,
             }
+
+        per_tensor_read_bytes = {
+            name: network_reads[(einsum_name, name)] for name in tensor_infos
+        }
+        per_tensor_write_bytes = {
+            name: network_writes[(einsum_name, name)] for name in tensor_infos
+        }
+        raw_network_access_decisions.extend(
+            _fallback_network_access_decisions(
+                einsum_name,
+                tensor_infos,
+                per_tensor_read_bytes,
+                per_tensor_write_bytes,
+                read_collective_type=CollectiveType.BROADCAST,
+                reason_prefix="Raw NetworkMemory fallback",
+            )
+        )
 
         try:
             decisions = _infer_matmul_collectives(
                 einsum_name,
                 tensor_infos,
-                {name: network_reads[(einsum_name, name)] for name in tensor_infos},
-                {name: network_writes[(einsum_name, name)] for name in tensor_infos},
+                per_tensor_read_bytes,
+                per_tensor_write_bytes,
                 tensor_size_bytes,
             )
         except ValueError:
             # Not a 2-input matmul (e.g. copy op, softmax, elementwise).
             # Use per-einsum fallback: reads → ALLGATHER, writes → ALLREDUCE.
-            decisions = []
-            for name, info in tensor_infos.items():
-                rbytes = network_reads[(einsum_name, name)]
-                wbytes = network_writes[(einsum_name, name)]
-                if rbytes > 0 and not info["is_output"]:
-                    decisions.append(_make_collective_decision(
-                        einsum_name, name, CollectiveType.ALLGATHER, "read",
-                        rbytes * SCALE if rbytes < 1e6 else rbytes,
-                        "Non-matmul einsum: treating read as ALLGATHER",
-                        info["tensor_ranks"], info["chip_sharded_ranks"],
-                    ))
-                if wbytes > 0 and info["is_output"]:
-                    decisions.append(_make_collective_decision(
-                        einsum_name, name, CollectiveType.ALLREDUCE, "write",
-                        wbytes * SCALE if wbytes < 1e6 else wbytes,
-                        "Non-matmul einsum: treating write as ALLREDUCE",
-                        info["tensor_ranks"], info["chip_sharded_ranks"],
-                    ))
+            decisions = _fallback_network_access_decisions(
+                einsum_name,
+                tensor_infos,
+                per_tensor_read_bytes,
+                per_tensor_write_bytes,
+                reason_prefix="Non-matmul fallback",
+            )
         collective_decisions.extend(decisions)
 
         for decision in decisions:
@@ -1200,28 +1255,16 @@ def map_and_extract(path, params, network_proxies, af, map_workload_to_arch):
                 continue
             transfers.append(_network_transfer_from_decision(decision))
 
-    # Fallback: if sharding-based inference produced nothing, emit raw transfers
-    # for every NetworkMemory access. Reads → BROADCAST, writes → ALLREDUCE.
+    # Fallback: if sharding-based inference produced nothing, emit raw decisions
+    # and transfers for every NetworkMemory access.
     # This is less precise than the sharding analysis but ensures non-zero traffic
     # when AccelForge picks a 1-chip mapping that bypasses chip parallelism.
     if not transfers:
-        for (einsum_name, tensor), nbytes in network_reads.items():
-            if nbytes > 0:
-                transfers.append(NetworkTransfer(
-                    tensor_name=f"{einsum_name}:{tensor}",
-                    data_bytes=float(nbytes),
-                    collective_type=CollectiveType.BROADCAST,
-                    src_chip=0,
-                    dst_chips=[chip for chip in _all_eval_chips() if chip != 0],
-                ))
-        for (einsum_name, tensor), nbytes in network_writes.items():
-            if nbytes > 0:
-                transfers.append(NetworkTransfer(
-                    tensor_name=f"{einsum_name}:{tensor}",
-                    data_bytes=float(nbytes),
-                    collective_type=CollectiveType.ALLREDUCE,
-                    participating_chips=_all_eval_chips(),
-                ))
+        for decision in raw_network_access_decisions:
+            if decision["collective_type"] is None or decision["data_bytes"] <= 0:
+                continue
+            collective_decisions.append(decision)
+            transfers.append(_network_transfer_from_decision(decision))
 
     return {
         "compute_energy": compute_e,
@@ -1383,7 +1426,7 @@ def main():
     print("=" * 120)
     print(
         f"Topology Sweep: {len(workloads)} workloads x {len(active_topologies)} topologies "
-        f"({EVAL_CHIPS} chips, congestion-aware, iterative feedback, "
+        f"({EVAL_CHIPS} chips, independent collective costs, iterative feedback, "
         f"damping={'on' if args.damping else 'off'})"
     )
     print("=" * 120)
@@ -1398,6 +1441,7 @@ def main():
               f"{s['bisection_bandwidth_TB_s']:>8.2f} TB/s")
 
     results = []
+    failures = []
     for desc, path, params in workloads:
         print(f"\nWorkload: {desc}")
         lats = {}
@@ -1421,7 +1465,20 @@ def main():
                     use_damping=args.damping,
                 )
             except Exception as exc:
-                print(f"FAILED: {exc}")
+                elapsed = time.time() - t0
+                print(f"FAILED after {elapsed:.0f}s: {type(exc).__name__}: {exc}")
+                traceback.print_exc()
+                failures.append(
+                    {
+                        "workload": desc,
+                        "workload_path": str(path),
+                        "params": dict(params),
+                        "topology": topology_name,
+                        "elapsed_s": float(elapsed),
+                        "exception_type": type(exc).__name__,
+                        "exception": str(exc),
+                    }
+                )
                 continue
 
             elapsed = time.time() - t0
@@ -1491,7 +1548,7 @@ def main():
         )
 
     print(f"\n\n{'=' * 120}")
-    print("RESULTS (latency in ms, with link congestion)")
+    print("RESULTS (latency in ms, summed independent collective costs)")
     print(f"{'=' * 120}")
     print(f"{'Workload':>28s} {'Bytes':>10s} {'AG%':>7s}", end="")
     for tn in active_topologies:
@@ -1578,6 +1635,7 @@ def main():
         },
         "topology_summaries": topology_summaries,
         "results": results,
+        "failures": failures,
         "insights": insights,
     }
 
@@ -1604,6 +1662,8 @@ def main():
         print(f"Saved milestone 2 analysis to {milestone2_path}")
 
     print("\nDone!")
+    if failures:
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

@@ -10,18 +10,29 @@ prints the summary table with stress analysis, and writes a combined results.jso
 """
 
 import json
+import os
 import sys
 from collections import defaultdict
 from pathlib import Path
+from types import SimpleNamespace
 
-TOPOLOGY_ORDER = ["Circulant {1,5,17}", "6D Hypercube", "Torus 4x4x4", "4D Torus 4x4x2x2", "Mesh 4x4x4", "Ring 64", "Torus 8x2x4", "5D Torus 4x2x2x2x2"]
+TOPOLOGY_ORDER = [
+    "Circulant {1,5,17}",
+    "6D Hypercube",
+    "Torus 4x4x4",
+    "4D Torus 4x4x2x2",
+    "Mesh 4x4x4",
+    "Ring 64",
+    "Torus 8x2x4",
+    "5D Torus 4x2x2x2x2",
+]
 
 
 def load_partial_results(run_dir: Path):
     """Load all partial JSON files, returning (workload_desc, topo_name) -> data."""
     entries = {}
     for json_file in sorted(run_dir.glob("*.json")):
-        if json_file.name == "results.json":
+        if json_file.name in {"results.json", "milestone2_analysis.json"}:
             continue
         with json_file.open() as f:
             data = json.load(f)
@@ -40,7 +51,7 @@ def load_partial_results(run_dir: Path):
 def merge_results(run_dir: Path):
     entries = load_partial_results(run_dir)
     if not entries:
-        print(f"No partial JSON files found in {run_dir}")
+        print(f"No successful partial results found in {run_dir}")
         sys.exit(1)
 
     # Group by workload
@@ -116,7 +127,7 @@ def merge_results(run_dir: Path):
 
     # ---- Print summary table ----
     print(f"\n{'=' * 140}")
-    print("MERGED RESULTS (latency in ms, with link congestion)")
+    print("MERGED RESULTS (latency in ms, summed independent collective costs)")
     print(f"{'=' * 140}")
     print(f"{'Workload':>30s} {'Bytes':>10s} {'AG%':>5s}", end="")
     for tn in available_topos:
@@ -243,6 +254,30 @@ def merge_results(run_dir: Path):
     with out_path.open("w", encoding="utf-8") as f:
         json.dump(combined, f, indent=2, sort_keys=True)
     print(f"\nSaved combined results to {out_path}")
+
+    try:
+        accelforge_root = first.get("accelforge_root")
+        if accelforge_root:
+            os.environ.setdefault("ACCELFORGE_ROOT", accelforge_root)
+        from sweep_matmuls import _build_milestone2_payload, _json_ready
+
+        args = SimpleNamespace(
+            damping=bool(first.get("feedback_loop", {}).get("damping_enabled", False))
+        )
+        workloads_dir = Path(first.get("workloads_dir", ""))
+        milestone_payload = _build_milestone2_payload(
+            run_dir,
+            merged_results,
+            topology_summaries,
+            args,
+            workloads_dir,
+        )
+        milestone_path = run_dir / "milestone2_analysis.json"
+        with milestone_path.open("w", encoding="utf-8") as f:
+            json.dump(_json_ready(milestone_payload), f, indent=2, sort_keys=True)
+        print(f"Saved milestone 2 analysis to {milestone_path}")
+    except Exception as exc:
+        print(f"WARNING: could not write milestone2_analysis.json: {exc}")
 
 
 if __name__ == "__main__":

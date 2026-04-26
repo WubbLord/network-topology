@@ -9,7 +9,19 @@
 #SBATCH -e %x-%A-%a.err                  # stderr per task
 
 # ---- Circulant {1,5,17} across all workloads ----
-WORKLOADS=("Square 128Kx128K" "Wide 8Kx256K" "Tall 256Kx64K" "VeryWide 2Kx256K" "Rect 64Kx128K" "LargeSquare 256Kx256K" "VeryTall 256Kx8K")
+WORKLOADS=(
+    "Small 2Kx8K"
+    "Small 4Kx16K"
+    "Medium 8Kx32K"
+    "Medium 16Kx32K"
+    "Wide 8Kx256K"
+    "VeryWide 2Kx256K"
+    "Rect 64Kx128K"
+    "Square 128Kx128K"
+    "Tall 256Kx64K"
+    "LargeSquare 256Kx256K"
+    "VeryTall 256Kx8K"
+)
 TOPOLOGY="Circulant {1,5,17}"
 
 WORKLOAD="${WORKLOADS[$SLURM_ARRAY_TASK_ID]}"

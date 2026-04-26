@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH -J gpt3-stress                   # Job name
-#SBATCH -p mit_normal                    # MIT shared CPU partition
-#SBATCH -c 4                             # 4 CPUs (this is CPU-only, no AccelForge mapper)
-#SBATCH --mem=8G                         # 8 GB should be plenty
-#SBATCH -t 01:00:00                      # 1 hour max
-#SBATCH -o gpt3-stress-%j.out            # stdout
-#SBATCH -e gpt3-stress-%j.err            # stderr
+#SBATCH -J submit-gpt3-175b
+#SBATCH -p mit_normal
+#SBATCH -c 1
+#SBATCH --mem=1G
+#SBATCH -t 00:05:00
+#SBATCH -o submit-gpt3-175b-%j.out
+#SBATCH -e submit-gpt3-175b-%j.err
 
 set -euo pipefail
 
@@ -25,11 +25,15 @@ resolve_project_dir() {
         fi
     fi
 
+    if [[ "$script_path" != /* ]] && [ -n "${SLURM_SUBMIT_DIR:-}" ]; then
+        script_path="${SLURM_SUBMIT_DIR}/${script_path}"
+    fi
+
     local script_dir
     script_dir="$(cd "$(dirname "$script_path")" && pwd)"
     local candidate
     candidate="$(dirname "$script_dir")"
-    if [ -f "$candidate/analyze_gpt3_stress.py" ] && [ -d "$candidate/slurm" ]; then
+    if [ -f "$candidate/sweep_matmuls.py" ] && [ -d "$candidate/slurm" ]; then
         cd "$candidate"
         pwd
         return
@@ -49,22 +53,26 @@ resolve_project_dir() {
 }
 
 PROJECT_DIR="$(resolve_project_dir)"
-mkdir -p "${PROJECT_DIR}/logs"
+LOGDIR="${PROJECT_DIR}/slurm/logs"
+RUN_DIR="${PROJECT_DIR}/logs/slurm-gpt3-175b-${SLURM_JOB_ID}"
+mkdir -p "$LOGDIR" "$RUN_DIR"
 
-echo "========================================"
-echo "GPT-3 Network Stress Analysis"
-echo "Node: $(hostname), CPUs: $SLURM_CPUS_PER_TASK"
-echo "Start: $(date)"
-echo "========================================"
-
-# ---- Environment ----
-module load miniforge/25.11.0-0
-source "${PROJECT_DIR}/.venv/bin/activate"
-
-# ---- Run ----
 cd "$PROJECT_DIR"
-python3 analyze_gpt3_stress.py
 
-echo "========================================"
-echo "Finished: $(date)"
-echo "========================================"
+ARRAY_JOB=$(sbatch --parsable \
+    --chdir="$LOGDIR" \
+    --array="0-3" \
+    --export=ALL,PROJECT_DIR="${PROJECT_DIR}",RUN_DIR="${RUN_DIR}" \
+    slurm/sweep_gpt3_175b.sbatch)
+
+AGG_JOB=$(sbatch --parsable \
+    --chdir="$LOGDIR" \
+    --dependency="afterok:${ARRAY_JOB}" \
+    --export=ALL,PROJECT_DIR="${PROJECT_DIR}",RUN_DIR="${RUN_DIR}" \
+    slurm/aggregate.sbatch)
+
+echo "GPT3 175B topology array submitted: $ARRAY_JOB"
+echo "Aggregation job submitted: $AGG_JOB"
+echo "Results will be in: ${RUN_DIR}/results.json"
+echo "Monitor: squeue -u \$USER"
+echo "Logs:    ${LOGDIR}/gpt3-175b-sweep-${ARRAY_JOB}-<task>.out"

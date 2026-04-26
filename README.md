@@ -7,17 +7,17 @@ At a high level, the repo does two things:
 1. It defines a small topology/cost-model library for rings, meshes, tori, and custom graphs.
 2. It plugs that library into an AccelForge mapping flow, so a mapped workload can be re-evaluated on multiple physical topologies.
 
-The core idea is simple: route every transfer onto physical links, merge the byte load from all concurrent transfers, and let the most loaded link determine latency.
+The core idea is simple: route each collective onto physical links, compute that collective's bottleneck-link latency, and sum the independently costed collectives in workload order.
 
 ## What Lives Where
 
 | Path | Purpose |
 | --- | --- |
-| `network_topology/topology.py` | Topology definitions, routing logic, and congestion-aware latency/energy calculation |
+| `network_topology/topology.py` | Topology definitions, routing logic, and link-load latency/energy calculation |
 | `network_topology/cost_model.py` | Transfer dataclasses and the public `compute_network_cost()` entrypoint |
 | `network_topology/tpu_v4.py` | TPU v4 constants and a convenience factory for TPU-like topologies |
 | `accelforge_configs/tpu_v4_distributed_1d.yaml` | AccelForge architecture spec used to map workloads quickly on a simplified 1D chip array |
-| `sweep_gpt3.py` | End-to-end script that maps workloads with AccelForge, extracts network traffic, and evaluates multiple topologies |
+| `sweep_matmuls.py` | End-to-end script that maps workloads with AccelForge, extracts network traffic, and evaluates multiple topologies |
 | `tests/` | Local pytest coverage for the topology and cost-model behavior |
 | `EXPERIMENTS.md` | Example results and higher-level conclusions |
 
@@ -31,14 +31,15 @@ The sweep script uses AccelForge to map a workload onto a distributed TPU v4-lik
 
 - It loads the local architecture spec from `accelforge_configs/tpu_v4_distributed_1d.yaml`.
 - It loads workload YAMLs from an AccelForge checkout.
-- It maps on `MAP_CHIPS = 2` chips first, because that search is much faster than mapping directly on 64 chips.
+- It maps on `MAP_CHIPS = 8` chips first, because that search is much faster than mapping directly on 64 chips.
 - It reads AccelForge's per-component, per-tensor action counts and filters out only `NetworkMemory` traffic.
 
-In `sweep_gpt3.py`, the extracted traffic is converted into this repo's transfer model as follows:
+In `sweep_matmuls.py`, the extracted traffic is converted into this repo's transfer model as follows:
 
-- `NetworkMemory read` becomes a `BROADCAST`.
-- `NetworkMemory write` becomes an `ALLREDUCE`.
-- The transferred bytes are multiplied by `SCALE = EVAL_CHIPS / MAP_CHIPS`, so traffic found on the 2-chip mapping is projected to the 64-chip evaluation size.
+- sharded matmul reads become `ALLGATHER` when a needed contracting or output dimension must be gathered.
+- sharded matmul writes become `ALLREDUCE` or `REDUCE_SCATTER` when partial products must be reduced.
+- fallback `NetworkMemory` reads become `BROADCAST` or `ALLGATHER` depending on the fallback path, and fallback writes become `ALLREDUCE`.
+- The transferred bytes are multiplied by `SCALE = EVAL_CHIPS / MAP_CHIPS`, so traffic found on the 8-chip mapping is projected to the 64-chip evaluation size.
 
 This means the sweep is not trying to re-map the workload for every topology. It maps once with AccelForge, turns the mapped network actions into abstract transfers, and then replays those transfers on each topology model.
 
@@ -47,9 +48,9 @@ This means the sweep is not trying to re-map the workload for every topology. It
 Once the script has a list of `NetworkTransfer` objects, `compute_network_cost()` in `network_topology/cost_model.py` takes over:
 
 1. Each transfer is routed onto physical links.
-2. The per-link byte loads from all transfers are merged.
+2. Each transfer's per-link byte loads are costed independently.
 3. Energy is computed from total bit-hops.
-4. Latency is computed from the bottleneck link load plus a hop-dependent term.
+4. Latency is computed from each transfer's bottleneck link load plus a hop-dependent term, then summed across transfers.
 
 The routing rules depend on topology:
 
@@ -63,7 +64,7 @@ The base cost function is:
 - `energy = sum(bytes_on_link) * 8 * energy_per_bit_per_hop`
 - `latency = max(bytes_on_link) / link_bandwidth + diameter * per_hop_latency`
 
-The important modeling choice is that energy depends on total routed traffic, while latency depends on the busiest link after all concurrent transfers are merged.
+The important modeling choice is that different collective operations are treated as sequential at this layer: one collective's link loads do not increase another collective's bottleneck load. Inside a single collective, link-level congestion still matters because the latency is set by that collective's most loaded link.
 
 ## The Iterative Convergence/Search Loop
 
@@ -72,7 +73,7 @@ This repo does not contain its own iterative numerical solver. The iterative sea
 That distinction matters:
 
 - `network_topology/*` is a deterministic post-mapping network model.
-- `sweep_gpt3.py` is a driver that calls the external mapper once per workload.
+- `sweep_matmuls.py` is a driver that calls the external mapper once per workload/topology feedback iteration.
 - AccelForge's Fast and Fusiest Mapper (FFM) is the part that performs the expensive iterative search.
 
 From this repo's point of view, the end-to-end loop is:
@@ -83,7 +84,7 @@ From this repo's point of view, the end-to-end loop is:
 4. Extract `NetworkMemory` reads and writes from the chosen mapping.
 5. Convert those actions into `NetworkTransfer` objects.
 6. Replay the same transfer list on each candidate topology.
-7. Compare congested network latency across topologies.
+7. Compare topology-dependent network latency across topologies.
 
 If you mean the actual iterative search inside `map_workload_to_arch()`, AccelForge's documented FFM flow is:
 
@@ -145,7 +146,7 @@ PY
 ### Topology Sweep
 
 ```bash
-ACCELFORGE_ROOT=/path/to/accelforge .venv/bin/python sweep_gpt3.py
+ACCELFORGE_ROOT=/path/to/accelforge .venv/bin/python sweep_matmuls.py
 ```
 
 This uses the local architecture config in `accelforge_configs/tpu_v4_distributed_1d.yaml` and workload templates from `$ACCELFORGE_ROOT/examples/workloads`. If `ACCELFORGE_ROOT` is unset, the script falls back to a sibling checkout at `../accelforge`. The full run is also saved to `logs/<timestamp>/results.json`.
@@ -161,14 +162,14 @@ Run the local test suite with:
 The current tests cover:
 
 - TPU v4 topology factory selection (`Torus3D` vs `Mesh3D`)
-- concurrent link-load merging in `compute_network_cost()`
+- independent per-collective latency summation in `compute_network_cost()`
 - the relationship between all-reduce, reduce-scatter, and all-gather on a ring
 
 ## Important Caveats
 
 - The repo's network model is analytical. It does not simulate packet scheduling, queueing, or compute/network overlap.
-- The end-to-end sweep only converts AccelForge `NetworkMemory` actions into `BROADCAST` and `ALLREDUCE`. If the upstream mapping emits richer communication patterns, the adapter would need to be extended.
-- The 2-chip-to-64-chip scaling in `sweep_gpt3.py` is a modeling shortcut, not a proof that the mapping itself would stay optimal at 64 chips.
+- The end-to-end sweep infers collectives from AccelForge chip sharding, with a fallback from raw `NetworkMemory` actions to collective traffic. If the upstream mapping emits richer communication patterns, the adapter would need to be extended.
+- The 8-chip-to-64-chip scaling in `sweep_matmuls.py` is a modeling shortcut, not a proof that the mapping itself would stay optimal at 64 chips.
 - `compute_l` and `compute_e` are extracted in the sweep script, but the printed comparison table is focused on network latency.
 
 ## Related Notes

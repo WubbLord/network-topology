@@ -2,16 +2,28 @@
 #SBATCH -J topo-sweep                    # Job name
 #SBATCH -p mit_normal                    # MIT shared CPU partition (12h max)
 #SBATCH -c 8                             # 8 CPUs per task (mapper is CPU-bound)
-#SBATCH --mem=40G                        # 40 GB memory (AccelForge mapper peaks ~33 GB)
-#SBATCH -t 04:00:00                      # 4 hours per task
+#SBATCH --mem=64G                        # 64 GB memory (Circulant/mapper can need more)
+#SBATCH -t 06:00:00                      # 6 hours per task
 # PROJECT_DIR is passed via --export from submit.sh
 #SBATCH -o %x-%A-%a.out                  # stdout per task (in working dir)
 #SBATCH -e %x-%A-%a.err                  # stderr per task
 
 # ---- Job matrix: (workload, topology) pairs ----
 # Array index encodes: index = workload_idx * num_topologies + topology_idx
-WORKLOADS=("Square 128Kx128K" "Wide 8Kx256K" "Tall 256Kx64K" "VeryWide 2Kx256K" "Rect 64Kx128K" "LargeSquare 256Kx256K" "VeryTall 256Kx8K")
-TOPOLOGIES=("Torus 4x4x4" "Mesh 4x4x4" "Ring 64")
+WORKLOADS=(
+    "Small 2Kx8K"
+    "Small 4Kx16K"
+    "Medium 8Kx32K"
+    "Medium 16Kx32K"
+    "Wide 8Kx256K"
+    "VeryWide 2Kx256K"
+    "Rect 64Kx128K"
+    "Square 128Kx128K"
+    "Tall 256Kx64K"
+    "LargeSquare 256Kx256K"
+    "VeryTall 256Kx8K"
+)
+TOPOLOGIES=("Torus 4x4x4" "Mesh 4x4x4" "Ring 64" "Circulant {1,5,17}")
 
 NUM_TOPOS=${#TOPOLOGIES[@]}
 WORKLOAD_IDX=$((SLURM_ARRAY_TASK_ID / NUM_TOPOS))
@@ -21,7 +33,7 @@ WORKLOAD="${WORKLOADS[$WORKLOAD_IDX]}"
 TOPOLOGY="${TOPOLOGIES[$TOPO_IDX]}"
 
 # Shared run directory
-RUN_DIR="${PROJECT_DIR}/logs/slurm-${SLURM_ARRAY_JOB_ID}"
+RUN_DIR="${RUN_DIR:-${PROJECT_DIR}/logs/slurm-${SLURM_ARRAY_JOB_ID}}"
 
 echo "========================================"
 echo "Task $SLURM_ARRAY_TASK_ID: workload='$WORKLOAD' topology='$TOPOLOGY'"

@@ -28,7 +28,6 @@ import math
 import random
 import sys
 import time
-from collections import defaultdict
 from pathlib import Path
 
 import numpy as np
@@ -55,12 +54,7 @@ def evaluate_topology(topo: Topology, data_bytes: float) -> dict:
     s = topo.summary()
     ar_energy, ar_latency = topo.allreduce_cost(data_bytes)
     bc_energy, bc_latency = topo.broadcast_cost(data_bytes, src=0)
-
-    # Congested: concurrent AllReduce + broadcast (worst case for training)
-    ar_loads = topo._allreduce_link_loads(data_bytes, list(range(topo.num_chips)))
-    bc_loads = topo._broadcast_link_loads(data_bytes, 0,
-                                          list(range(1, topo.num_chips)))
-    _, congested_latency = topo.compute_congested_cost([ar_loads, bc_loads])
+    sequential_collective_latency = ar_latency + bc_latency
 
     return {
         "diameter": s["diameter"],
@@ -71,7 +65,7 @@ def evaluate_topology(topo: Topology, data_bytes: float) -> dict:
         "ar_energy_J": ar_energy,
         "bc_latency_ms": bc_latency * 1e3,
         "bc_energy_J": bc_energy,
-        "congested_latency_ms": congested_latency * 1e3,
+        "sequential_collective_latency_ms": sequential_collective_latency * 1e3,
     }
 
 
@@ -258,7 +252,7 @@ def print_comparison(all_results: list[dict], data_bytes: float):
     print(f"{'='*120}")
     print(f"{'Rank':>4s}  {'Topology':>30s}  {'Type':>12s}  {'Diam':>4s}  "
           f"{'AvgHop':>6s}  {'BisecBW':>8s}  {'AR (ms)':>10s}  "
-          f"{'BC (ms)':>10s}  {'Cong (ms)':>10s}  {'vs Torus':>9s}")
+          f"{'BC (ms)':>10s}  {'Seq (ms)':>10s}  {'vs Torus':>9s}")
     print("-" * 120)
 
     for rank, r in enumerate(degree6[:30], 1):
@@ -267,7 +261,7 @@ def print_comparison(all_results: list[dict], data_bytes: float):
               f"{r['diameter']:>4d}  {r['avg_hops']:>6.2f}  "
               f"{r['bisection_bw_TB_s']:>7.2f}T  "
               f"{r['ar_latency_ms']:>10.2f}  {r['bc_latency_ms']:>10.2f}  "
-              f"{r['congested_latency_ms']:>10.2f}  "
+              f"{r['sequential_collective_latency_ms']:>10.2f}  "
               f"{speedup:>8.2f}x")
 
     # Also show top non-degree-6 for reference
@@ -280,7 +274,7 @@ def print_comparison(all_results: list[dict], data_bytes: float):
                   f"{r['diameter']:>4d}  {r['avg_hops']:>6.2f}  "
                   f"{r['bisection_bw_TB_s']:>7.2f}T  "
                   f"{r['ar_latency_ms']:>10.2f}  {r['bc_latency_ms']:>10.2f}  "
-                  f"{r['congested_latency_ms']:>10.2f}  "
+                  f"{r['sequential_collective_latency_ms']:>10.2f}  "
                   f"{speedup:>8.2f}x")
 
 
@@ -304,7 +298,7 @@ def print_top_analysis(top: dict, torus: dict, data_bytes: float):
         ("AllReduce latency (ms)", "ar_latency_ms", False),
         ("AllReduce energy (J)", "ar_energy_J", False),
         ("Broadcast latency (ms)", "bc_latency_ms", False),
-        ("Congested latency (ms)", "congested_latency_ms", False),
+        ("Sequential collective latency (ms)", "sequential_collective_latency_ms", False),
     ]
 
     for label, key, higher_better in comparisons:
@@ -322,11 +316,14 @@ def print_top_analysis(top: dict, torus: dict, data_bytes: float):
             print(f"  {label:<30s} {bv:>12d} {tv:>12d}")
 
     ar_speedup = torus["ar_latency_ms"] / top["ar_latency_ms"]
-    cong_speedup = torus["congested_latency_ms"] / top["congested_latency_ms"]
+    seq_speedup = (
+        torus["sequential_collective_latency_ms"]
+        / top["sequential_collective_latency_ms"]
+    )
     energy_saving = (1 - top["ar_energy_J"] / torus["ar_energy_J"]) * 100
 
     print(f"\n  AllReduce speedup: {ar_speedup:.2f}x")
-    print(f"  Congested speedup: {cong_speedup:.2f}x")
+    print(f"  Sequential collective speedup: {seq_speedup:.2f}x")
     print(f"  Energy saving: {energy_saving:.1f}%")
 
 

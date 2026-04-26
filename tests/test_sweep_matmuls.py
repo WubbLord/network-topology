@@ -7,8 +7,10 @@ from sweep_matmuls import (
     SCALE,
     _build_milestone2_topology_summary,
     _annotate_collective_decisions,
+    _chip_sharded_rank_vars,
     _damp_network_proxies,
     _estimate_actual_system_cost,
+    _fallback_network_access_decisions,
     _infer_matmul_collectives,
     _initial_network_proxies,
     _network_transfer_from_decision,
@@ -18,6 +20,14 @@ from sweep_matmuls import (
 )
 
 
+class _FakeMapping:
+    def __init__(self, nodes):
+        self.nodes = nodes
+
+    def get_nodes_of_type(self, _node_type):
+        return self.nodes
+
+
 def _tensor_info(name, ranks, sharded, is_output=False):
     return {
         "name": name,
@@ -25,6 +35,20 @@ def _tensor_info(name, ranks, sharded, is_output=False):
         "chip_sharded_ranks": set(sharded),
         "is_output": is_output,
     }
+
+
+def test_chip_sharded_rank_vars_reads_fused_spatial_annotations():
+    from accelforge.frontend.mapping.mapping import Spatial
+
+    spatial = Spatial(name="Chip", component="ChipArray", rank_variable={"m", "n"})
+    spatial._einsum_to_rank_variables = {"E0": {"m"}, "E1": {"n"}}
+    local_spatial = Spatial(name="Z", component="LocalBuffer", rank_variable="m")
+    plain_spatial = Spatial(name="Chip", component="ChipArray", rank_variable="k")
+
+    mapping = _FakeMapping([spatial, local_spatial, plain_spatial])
+
+    assert _chip_sharded_rank_vars("E0", mapping, {"m", "k"}) == {"m", "k"}
+    assert _chip_sharded_rank_vars("E1", mapping, {"m", "k"}) == {"k"}
 
 
 def test_local_matmul_needs_no_collective():
@@ -146,12 +170,43 @@ def test_proxy_update_reduces_per_transfer_estimates_to_read_write_scalars():
     annotated = _annotate_collective_decisions(decisions, network_result)
     updated = _updated_network_proxies(_initial_network_proxies(), annotated, network_result)
 
-    assert annotated[0]["estimated_network_latency"] == 15.0
-    assert annotated[1]["estimated_network_latency"] == 30.0
+    assert annotated[0]["estimated_network_latency"] == 10.0
+    assert annotated[1]["estimated_network_latency"] == 20.0
     assert updated["NETWORK_READ_ENERGY"] == 2.0
-    assert updated["NETWORK_READ_LATENCY"] == 0.15
+    assert updated["NETWORK_READ_LATENCY"] == 0.1
     assert updated["NETWORK_WRITE_ENERGY"] == 2.0
-    assert updated["NETWORK_WRITE_LATENCY"] == 0.6
+    assert updated["NETWORK_WRITE_LATENCY"] == 0.4
+
+
+def test_fallback_network_access_decisions_use_already_scaled_bytes():
+    tensor_infos = {
+        "A": _tensor_info("A", {"m", "k"}, set()),
+        "C": _tensor_info("C", {"m", "n"}, set(), is_output=True),
+    }
+
+    decisions = _fallback_network_access_decisions(
+        "Matmul0",
+        tensor_infos,
+        {"A": 64.0, "C": 0.0},
+        {"A": 0.0, "C": 32.0},
+    )
+
+    assert [decision["collective_type"] for decision in decisions] == [
+        CollectiveType.ALLGATHER.name,
+        CollectiveType.ALLREDUCE.name,
+    ]
+    assert [decision["data_bytes"] for decision in decisions] == [64.0, 32.0]
+    assert [decision["proxy_action"] for decision in decisions] == ["read", "write"]
+
+    raw_decisions = _fallback_network_access_decisions(
+        "Matmul0",
+        tensor_infos,
+        {"A": 64.0, "C": 0.0},
+        {"A": 0.0, "C": 0.0},
+        read_collective_type=CollectiveType.BROADCAST,
+    )
+    assert raw_decisions[0]["collective_type"] == CollectiveType.BROADCAST.name
+    assert raw_decisions[0]["data_bytes"] == 64.0
 
 
 def test_damp_network_proxies_is_identity_when_disabled():

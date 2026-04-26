@@ -12,7 +12,7 @@ def test_make_tpu_v4_topology_selects_expected_topology_class():
     assert isinstance(make_tpu_v4_topology((4, 4, 4), force_mesh=True), Mesh3D)
 
 
-def test_compute_network_cost_merges_concurrent_link_loads():
+def test_compute_network_cost_sums_independent_transfer_latencies():
     topo = Custom(
         adj_matrix=np.array(
             [
@@ -26,16 +26,18 @@ def test_compute_network_cost_merges_concurrent_link_loads():
         per_hop_latency=0.0,
     )
     transfers = [
-        NetworkTransfer("long", 10.0, CollectiveType.POINT_TO_POINT, src_chip=0, dst_chips=[2]),
-        NetworkTransfer("short", 10.0, CollectiveType.POINT_TO_POINT, src_chip=0, dst_chips=[1]),
+        NetworkTransfer("left", 10.0, CollectiveType.POINT_TO_POINT, src_chip=0, dst_chips=[1]),
+        NetworkTransfer("right", 10.0, CollectiveType.POINT_TO_POINT, src_chip=1, dst_chips=[2]),
     ]
 
     result = compute_network_cost(topo, transfers)
 
-    assert result.total_energy == 240.0
+    assert result.total_energy == 160.0
     assert result.total_latency == 2.0
+    assert [t["latency"] for t in result.per_transfer] == [1.0, 1.0]
+    assert [t["max_link_load"] for t in result.per_transfer] == [10.0, 10.0]
     assert result.total_network_bytes == 20.0
-    assert result.energy_per_network_access == 12.0
+    assert result.energy_per_network_access == 8.0
     assert result.latency_per_network_access == 0.1
 
 

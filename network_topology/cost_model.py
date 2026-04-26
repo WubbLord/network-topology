@@ -1,8 +1,9 @@
 """
-Network cost model with link-level congestion.
+Network cost model with per-collective link-level costs.
 
-Routes transfers onto physical links, merges loads from concurrent transfers,
-and computes cost from the bottleneck link.
+Each collective is routed onto physical links independently. Per-collective
+latency comes from that collective's bottleneck link, and total latency is the
+sum across collectives.
 """
 
 from __future__ import annotations
@@ -91,21 +92,21 @@ def _get_transfer_link_loads(topology, transfer):
 
 def compute_network_cost(topology: Topology, transfers: list[NetworkTransfer]) -> NetworkCostResult:
     """
-    Compute congested network cost for concurrent transfers.
+    Compute network cost for a sequential list of collective operations.
 
-    Each transfer is routed onto physical links. All link loads are merged.
-    The bottleneck link determines overall latency. Energy = total bit-hops.
+    Link loads are not merged across transfers. Each transfer is routed and
+    costed independently, then energy and latency are summed across transfers.
     """
     if not transfers:
         return NetworkCostResult(0, 0, [], 0, 0, 0)
 
-    per_transfer_loads = []
     per_transfer = []
     total_bytes = 0.0
+    total_energy = 0.0
+    total_latency = 0.0
 
     for transfer in transfers:
         loads = _get_transfer_link_loads(topology, transfer)
-        per_transfer_loads.append(loads)
         indiv_energy, indiv_latency = topology._cost_from_link_loads(loads)
         per_transfer.append({
             "tensor": transfer.tensor_name,
@@ -119,8 +120,8 @@ def compute_network_cost(topology: Topology, transfers: list[NetworkTransfer]) -
             "max_link_load": max(loads.values(), default=0.0),
         })
         total_bytes += transfer.data_bytes
-
-    total_energy, total_latency = topology.compute_congested_cost(per_transfer_loads)
+        total_energy += indiv_energy
+        total_latency += indiv_latency
 
     epb = total_energy / total_bytes if total_bytes > 0 else 0
     lpb = total_latency / total_bytes if total_bytes > 0 else 0

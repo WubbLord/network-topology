@@ -72,14 +72,27 @@ def style_ax(ax, title=None, ylabel=None, xlabel=None):
 def load_entries(run_dir: Path):
     """Load all per-job JSON results."""
     entries = {}
-    for jf in sorted(run_dir.glob("*.json")):
-        if jf.name == "results.json":
-            continue
-        with jf.open() as f:
-            data = json.load(f)
+    skip_files = {"results.json", "milestone2_analysis.json"}
+
+    def add_results(data):
         for r in data.get("results", []):
             for tn, td in r.get("topologies", {}).items():
                 entries[(r["desc"], tn)] = (r, td)
+
+    for jf in sorted(run_dir.glob("*.json")):
+        if jf.name in skip_files:
+            continue
+        with jf.open() as f:
+            add_results(json.load(f))
+
+    if entries:
+        return entries
+
+    results_path = run_dir / "results.json"
+    if results_path.exists():
+        with results_path.open() as f:
+            add_results(json.load(f))
+
     return entries
 
 
@@ -88,17 +101,22 @@ def load_entries(run_dir: Path):
 # ===========================================================================
 def fig_workloads(out_dir):
     workloads = [
-        ("Square\n128K×128K", 131072, 131072, "#7EB8DA"),
+        ("Small\n2K×8K", 2048, 8192, "#D8C7A3"),
+        ("Small\n4K×16K", 4096, 16384, "#B6D7A8"),
+        ("Medium\n8K×32K", 8192, 32768, "#A4C2F4"),
+        ("Medium\n16K×32K", 16384, 32768, "#D5A6BD"),
         ("Wide (FFN)\n8K×256K", 8192, 262144, "#F4A7A0"),
-        ("Tall\n256K×64K", 262144, 65536, "#A8D5BA"),
         ("VeryWide\n2K×256K", 2048, 262144, "#F9D986"),
         ("Rect\n64K×128K", 65536, 131072, "#C4B7E0"),
+        ("Square\n128K×128K", 131072, 131072, "#7EB8DA"),
+        ("Tall\n256K×64K", 262144, 65536, "#A8D5BA"),
         ("LargeSq\n256K×256K", 262144, 262144, "#6BC5B0"),
         ("VeryTall\n256K×8K", 262144, 8192, "#E8B4B8"),
     ]
 
-    nrows, ncols = 2, 4
-    fig, axes = plt.subplots(nrows, ncols, figsize=(18, 7))
+    ncols = 4
+    nrows = (len(workloads) + ncols - 1) // ncols
+    fig, axes = plt.subplots(nrows, ncols, figsize=(18, 3.5 * nrows))
     fig.patch.set_facecolor("white")
     fig.suptitle("Workloads Tested", fontsize=16, fontweight="bold", color=TEXT_COLOR, y=0.98)
 
@@ -191,10 +209,17 @@ def fig_topologies(out_dir):
 def _available_workloads(entries):
     """Find all workloads with at least 2 topology results, in a stable order."""
     ALL_WORKLOADS = [
-        "Square 128Kx128K", "Wide 8Kx256K", "Tall 256Kx64K",
-        "VeryWide 2Kx256K", "Rect 64Kx128K", "LargeSquare 256Kx256K", "VeryTall 256Kx8K",
+        "GPT3 175B",
+        "Small 2Kx8K", "Small 4Kx16K", "Medium 8Kx32K", "Medium 16Kx32K",
+        "Wide 8Kx256K", "VeryWide 2Kx256K", "Rect 64Kx128K",
+        "Square 128Kx128K", "Tall 256Kx64K", "LargeSquare 256Kx256K", "VeryTall 256Kx8K",
     ]
     WL_LABELS = {
+        "GPT3 175B": "GPT3\n175B",
+        "Small 2Kx8K": "Small\n2K×8K",
+        "Small 4Kx16K": "Small\n4K×16K",
+        "Medium 8Kx32K": "Medium\n8K×32K",
+        "Medium 16Kx32K": "Medium\n16K×32K",
         "Square 128Kx128K": "Square\n128K×128K", "Wide 8Kx256K": "Wide\n8K×256K",
         "Tall 256Kx64K": "Tall\n256K×64K", "VeryWide 2Kx256K": "VeryWide\n2K×256K",
         "Rect 64Kx128K": "Rect\n64K×128K", "LargeSquare 256Kx256K": "LargeSq\n256K×256K",

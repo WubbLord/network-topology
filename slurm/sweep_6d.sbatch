@@ -9,13 +9,24 @@
 #SBATCH -e %x-%A-%a.err                  # stderr per task
 
 # ---- 6D Hypercube only, smaller workloads that fit in memory ----
-WORKLOADS=("Wide 8Kx256K" "VeryWide 2Kx256K" "VeryTall 256Kx8K" "Square 128Kx128K" "Rect 64Kx128K")
+WORKLOADS=(
+    "Small 2Kx8K"
+    "Small 4Kx16K"
+    "Medium 8Kx32K"
+    "Medium 16Kx32K"
+    "Wide 8Kx256K"
+    "VeryWide 2Kx256K"
+    "Rect 64Kx128K"
+    "Square 128Kx128K"
+    "VeryTall 256Kx8K"
+)
 TOPOLOGY="6D Hypercube"
 
 WORKLOAD="${WORKLOADS[$SLURM_ARRAY_TASK_ID]}"
 
-# Shared run directory
-RUN_DIR="${PROJECT_DIR}/logs/slurm-${SLURM_ARRAY_JOB_ID}"
+# Shared run directory. submit.sh exports RUN_DIR so the 6D artifacts land with
+# the rest of the sweep; direct sbatch use falls back to this array's run dir.
+RUN_DIR="${RUN_DIR:-${PROJECT_DIR}/logs/slurm-${SLURM_ARRAY_JOB_ID}}"
 
 echo "========================================"
 echo "Task $SLURM_ARRAY_TASK_ID: workload='$WORKLOAD' topology='$TOPOLOGY'"

@@ -3,9 +3,12 @@ Network topology definitions with link-level congestion modeling.
 
 Congestion model:
     1. Each transfer is routed onto physical links with per-link byte loads.
-    2. Link loads from all concurrent transfers are merged.
-    3. Latency = max_link_load / link_bandwidth (bottleneck link).
+    2. Latency = max_link_load / link_bandwidth (bottleneck link).
+    3. The public cost model sums independently costed collective latencies.
     4. Energy = total bit-hops (independent of congestion).
+
+The lower-level compute_congested_cost helper can still merge link loads when an
+explicit concurrent-transfer experiment needs it.
 
 Known topologies (Ring, Mesh3D, Torus3D) override routing with optimal
 algorithms. Custom topologies use generic shortest-path routing.
@@ -511,8 +514,8 @@ class TorusND(Topology):
 
     Examples:
         TorusND((4,4,4), ...)       # same as Torus3D 4x4x4, 6 links/chip
-        TorusND((4,4,2,2), ...)     # 4D torus, 8 links/chip
-        TorusND((2,2,2,2,2,2), ...) # 6D hypercube, 12 links/chip
+        TorusND((4,4,2,2), ...)     # 4D torus, 6 links/chip
+        TorusND((2,2,2,2,2,2), ...) # 6D hypercube, 6 links/chip
     """
     dims: tuple = ()
 

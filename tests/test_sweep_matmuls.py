@@ -9,6 +9,7 @@ from sweep_matmuls import (
     _annotate_collective_decisions,
     _chip_sharded_rank_vars,
     _damp_network_proxies,
+    _direct_gpt3_network_transfers,
     _estimate_actual_system_cost,
     _fallback_network_access_decisions,
     _infer_matmul_collectives,
@@ -207,6 +208,26 @@ def test_fallback_network_access_decisions_use_already_scaled_bytes():
     )
     assert raw_decisions[0]["collective_type"] == CollectiveType.BROADCAST.name
     assert raw_decisions[0]["data_bytes"] == 64.0
+
+
+def test_direct_gpt3_workload_uses_two_allreduces_per_layer():
+    params = {
+        "BATCH_SIZE": 1,
+        "N_TOKENS": 8,
+        "N_LAYERS": 3,
+        "BYTES_PER_VALUE": 1,
+    }
+
+    config, transfers, decisions = _direct_gpt3_network_transfers(params)
+
+    assert config["hidden_dim"] == 96 * 128
+    assert config["activation_bytes"] == 8 * 96 * 128
+    assert len(transfers) == 6
+    assert len(decisions) == 6
+    assert {transfer.collective_type for transfer in transfers} == {
+        CollectiveType.ALLREDUCE
+    }
+    assert sum(transfer.data_bytes for transfer in transfers) == 6 * 8 * 96 * 128
 
 
 def test_damp_network_proxies_is_identity_when_disabled():

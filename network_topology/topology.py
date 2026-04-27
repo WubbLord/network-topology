@@ -3,7 +3,7 @@ Network topology definitions with link-level congestion modeling.
 
 Congestion model:
     1. Each transfer is routed onto physical links with per-link byte loads.
-    2. Latency = max_link_load / link_bandwidth (bottleneck link).
+    2. Latency = max_link_load / link_bandwidth + diameter * per_hop_latency.
     3. The public cost model sums independently costed collective latencies.
     4. Energy = total bit-hops (independent of congestion).
 

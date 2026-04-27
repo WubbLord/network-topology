@@ -108,6 +108,14 @@ def compute_network_cost(topology: Topology, transfers: list[NetworkTransfer]) -
     for transfer in transfers:
         loads = _get_transfer_link_loads(topology, transfer)
         indiv_energy, indiv_latency = topology._cost_from_link_loads(loads)
+        max_link_load = max(loads.values(), default=0.0)
+        serialization_latency = (
+            max_link_load / topology.link_bandwidth if loads else 0.0
+        )
+        first_byte_hops = topology.diameter if loads else 0
+        first_byte_latency = (
+            first_byte_hops * topology.per_hop_latency if loads else 0.0
+        )
         per_transfer.append({
             "tensor": transfer.tensor_name,
             "collective": transfer.collective_type.name,
@@ -117,7 +125,12 @@ def compute_network_cost(topology: Topology, transfers: list[NetworkTransfer]) -
             "dst_chips": transfer.dst_chips,
             "participating_chips": transfer.participating_chips,
             "link_count": len(loads),
-            "max_link_load": max(loads.values(), default=0.0),
+            "max_link_load": max_link_load,
+            "serialization_latency": serialization_latency,
+            "first_byte_latency": first_byte_latency,
+            "first_byte_hops": first_byte_hops,
+            "per_hop_latency": topology.per_hop_latency,
+            "link_bandwidth": topology.link_bandwidth,
         })
         total_bytes += transfer.data_bytes
         total_energy += indiv_energy

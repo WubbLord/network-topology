@@ -1,9 +1,9 @@
 #!/bin/bash
 #SBATCH -J gpt3-175b-sweep
-#SBATCH -p mit_normal
-#SBATCH -c 8
-#SBATCH --mem=64G
-#SBATCH -t 12:00:00
+#SBATCH -p mit_quicktest
+#SBATCH -c 1
+#SBATCH --mem=4G
+#SBATCH -t 00:10:00
 #SBATCH -o %x-%A-%a.out
 #SBATCH -e %x-%A-%a.err
 

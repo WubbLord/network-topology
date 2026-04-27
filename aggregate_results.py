@@ -183,10 +183,14 @@ def merge_results(run_dir: Path):
                 tensor = xf.get("tensor", "?")
                 coll = xf.get("collective", "?")
                 lat = xf.get("latency", 0)
+                ser_lat = xf.get("serialization_latency", 0)
+                first_byte_lat = xf.get("first_byte_latency", 0)
                 dbytes = xf.get("data_bytes", 0)
                 pct = (lat / total_lat * 100) if total_lat > 0 else 0
                 print(f"    [{i+1}] {tensor:>40s}  {coll:<15s}  "
-                      f"{dbytes:.2e}B  {lat*1e3:>8.1f}ms  ({pct:>5.1f}%)")
+                      f"{dbytes:.2e}B  {lat*1e3:>8.1f}ms  "
+                      f"ser={ser_lat*1e3:>8.1f}ms  "
+                      f"first={first_byte_lat*1e6:>5.1f}us  ({pct:>5.1f}%)")
 
     # ---- Collective mix ----
     print(f"\n{'=' * 140}")

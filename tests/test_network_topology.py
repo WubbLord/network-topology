@@ -36,6 +36,9 @@ def test_compute_network_cost_sums_independent_transfer_latencies():
     assert result.total_latency == 2.0
     assert [t["latency"] for t in result.per_transfer] == [1.0, 1.0]
     assert [t["max_link_load"] for t in result.per_transfer] == [10.0, 10.0]
+    assert [t["serialization_latency"] for t in result.per_transfer] == [1.0, 1.0]
+    assert [t["first_byte_latency"] for t in result.per_transfer] == [0.0, 0.0]
+    assert [t["first_byte_hops"] for t in result.per_transfer] == [2, 2]
     assert result.total_network_bytes == 20.0
     assert result.energy_per_network_access == 8.0
     assert result.latency_per_network_access == 0.1

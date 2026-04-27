@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH -J submit-gpt3-175b
-#SBATCH -p mit_normal
+#SBATCH -p mit_quicktest
 #SBATCH -c 1
 #SBATCH --mem=1G
 #SBATCH -t 00:05:00
@@ -60,12 +60,20 @@ mkdir -p "$LOGDIR" "$RUN_DIR"
 cd "$PROJECT_DIR"
 
 ARRAY_JOB=$(sbatch --parsable \
+    --partition=mit_quicktest \
+    --time=00:10:00 \
+    --cpus-per-task=1 \
+    --mem=4G \
     --chdir="$LOGDIR" \
     --array="0-3" \
     --export=ALL,PROJECT_DIR="${PROJECT_DIR}",RUN_DIR="${RUN_DIR}" \
     slurm/sweep_gpt3_175b.sbatch)
 
 AGG_JOB=$(sbatch --parsable \
+    --partition=mit_quicktest \
+    --time=00:05:00 \
+    --cpus-per-task=1 \
+    --mem=4G \
     --chdir="$LOGDIR" \
     --dependency="afterok:${ARRAY_JOB}" \
     --export=ALL,PROJECT_DIR="${PROJECT_DIR}",RUN_DIR="${RUN_DIR}" \

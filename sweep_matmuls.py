@@ -42,6 +42,7 @@ DEFAULT_NETWORK_WRITE_LATENCY = 1.0 / (8.0 * 614e9)
 MAX_PROXY_ITERS = int(os.environ.get("MAX_PROXY_ITERS", 6))
 PROXY_DAMPING = float(os.environ.get("PROXY_DAMPING", 0.5))
 PROXY_REL_TOL = float(os.environ.get("PROXY_REL_TOL", 0.05))
+DIRECT_GPT3_MODEL = "gpt3_175b_tensor_parallel"
 
 hw = dict(link_bandwidth=ICI_LINK_BW_UNIDIR, energy_per_bit_per_hop=ICI_ENERGY_PER_BIT_PER_HOP,
           per_hop_latency=ICI_PER_HOP_LATENCY)
@@ -107,6 +108,97 @@ def _network_transfer_from_decision(decision) -> NetworkTransfer:
         data_bytes=decision["data_bytes"],
         collective_type=collective_type,
         **kwargs,
+    )
+
+
+def _is_direct_gpt3_workload(params) -> bool:
+    return params.get("__direct_model") == DIRECT_GPT3_MODEL
+
+
+def _direct_gpt3_config(params):
+    batch_size = int(params.get("BATCH_SIZE", 1))
+    n_tokens = int(params.get("N_TOKENS", 8192))
+    n_layers = int(params.get("N_LAYERS", 96))
+    num_heads = int(params.get("NUM_HEADS", 96))
+    head_dim = int(params.get("HEAD_DIM", 128))
+    bytes_per_value = int(params.get("BYTES_PER_VALUE", 1))
+    hidden_dim = num_heads * head_dim
+    activation_bytes = float(batch_size * n_tokens * hidden_dim * bytes_per_value)
+    return {
+        "model": DIRECT_GPT3_MODEL,
+        "batch_size": batch_size,
+        "n_tokens": n_tokens,
+        "n_layers": n_layers,
+        "num_heads": num_heads,
+        "head_dim": head_dim,
+        "hidden_dim": hidden_dim,
+        "bytes_per_value": bytes_per_value,
+        "activation_bytes": activation_bytes,
+        "collectives_per_layer": 2,
+        "collective_pattern": "Megatron-style tensor-parallel forward pass",
+    }
+
+
+def _direct_gpt3_network_transfers(params):
+    config = _direct_gpt3_config(params)
+    participants = _all_eval_chips()
+    transfers = []
+    decisions = []
+
+    for layer_idx in range(config["n_layers"]):
+        for suffix, reason in (
+            (
+                "attention_output_allreduce",
+                "Tensor-parallel attention output projection is reduced across chips.",
+            ),
+            (
+                "ffn_output_allreduce",
+                "Tensor-parallel FFN down projection is reduced across chips.",
+            ),
+        ):
+            einsum_name = f"layer{layer_idx}:{suffix}"
+            tensor_name = "activation"
+            data_bytes = config["activation_bytes"]
+            transfers.append(
+                NetworkTransfer(
+                    tensor_name=f"{einsum_name}:{tensor_name}",
+                    data_bytes=data_bytes,
+                    collective_type=CollectiveType.ALLREDUCE,
+                    participating_chips=participants,
+                )
+            )
+            decisions.append(
+                _make_collective_decision(
+                    einsum_name,
+                    tensor_name,
+                    CollectiveType.ALLREDUCE,
+                    "write",
+                    data_bytes,
+                    reason,
+                    {"B", "M", "D"},
+                    {"D"},
+                )
+            )
+
+    return config, transfers, decisions
+
+
+def _direct_gpt3_mapping_yaml(config):
+    return "\n".join(
+        [
+            "direct_gpt3_175b:",
+            f"  model: {config['model']}",
+            f"  batch_size: {config['batch_size']}",
+            f"  n_tokens: {config['n_tokens']}",
+            f"  n_layers: {config['n_layers']}",
+            f"  hidden_dim: {config['hidden_dim']}",
+            f"  bytes_per_value: {config['bytes_per_value']}",
+            f"  activation_bytes: {config['activation_bytes']}",
+            "  collectives_per_layer: 2",
+            "  collective_type: ALLREDUCE",
+            "  note: AccelForge GPT3 QK mapping is bypassed for this direct network model.",
+            "",
+        ]
     )
 
 
@@ -1118,7 +1210,17 @@ def load_accelforge(accelforge_root: Path):
 def make_workloads(workloads_dir: Path):
     return [
         # === AccelForge transformer workload templates ===
-        ("GPT3 175B", workloads_dir / "gpt3_175B.yaml", {}),
+        (
+            "GPT3 175B",
+            workloads_dir / "gpt3_175B.yaml",
+            {
+                "__direct_model": DIRECT_GPT3_MODEL,
+                "BATCH_SIZE": 1,
+                "N_TOKENS": 8192,
+                "N_LAYERS": 96,
+                "BYTES_PER_VALUE": 1,
+            },
+        ),
 
         # === Smaller matmuls for faster debugging/sanity sweeps ===
         ("Small 2Kx8K", workloads_dir / "matmuls.yaml",
@@ -1281,6 +1383,111 @@ def map_and_extract(path, params, network_proxies, af, map_workload_to_arch):
     }
 
 
+def run_direct_gpt3_workload(
+    params,
+    topology,
+    mapping_dir: Path | None = None,
+):
+    config, transfers, decisions = _direct_gpt3_network_transfers(params)
+    mapping_yaml = _direct_gpt3_mapping_yaml(config)
+    mapping_yaml_relpath = None
+    if mapping_dir is not None:
+        mapping_dir.mkdir(parents=True, exist_ok=True)
+        mapping_yaml_path = mapping_dir / "iter_001.yaml"
+        mapping_yaml_path.write_text(mapping_yaml, encoding="utf-8")
+        mapping_yaml_relpath = str(
+            Path("mappings") / mapping_yaml_path.relative_to(mapping_dir.parents[1])
+        )
+
+    network_result = compute_network_cost(topology, transfers)
+    collective_decisions = _annotate_collective_decisions(decisions, network_result)
+    network_summary = _summarize_actual_network(collective_decisions, network_result)
+    mapping_cost_summary = {
+        "proxy_total_energy_scaled": 0.0,
+        "proxy_non_network_energy_scaled": 0.0,
+        "proxy_network_energy_scaled": 0.0,
+        "proxy_total_latency": 0.0,
+        "proxy_total_latency_reconstructed": 0.0,
+        "non_network_total_latency_reconstructed": 0.0,
+        "energy_by_component_scaled": {},
+        "per_einsum": {},
+        "direct_model": config,
+    }
+    estimated_actual_system = _estimate_actual_system_cost(
+        mapping_cost_summary, network_summary
+    )
+    total_bytes, allgather_pct = _collective_mix(transfers)
+    network_proxies = _initial_network_proxies()
+    mapping_sha256 = _mapping_sha256(mapping_yaml)
+    mapping_result = {
+        "compute_energy": 0.0,
+        "compute_latency": 0.0,
+        "transfers": transfers,
+        "collective_decisions": collective_decisions,
+        "network_proxies": dict(network_proxies),
+        "mapping_yaml": mapping_yaml,
+        "mapping_yaml_path": mapping_yaml_relpath,
+        "mapping_sha256": mapping_sha256,
+        "mapping_cost_summary": mapping_cost_summary,
+        "mapping_energy": {},
+        "mapping_latency": {},
+        "mapping_actions": {},
+        "direct_model": config,
+    }
+
+    iterations = [
+        {
+            "iteration": 1,
+            "input_network_proxies": dict(network_proxies),
+            "proposed_network_proxies": dict(network_proxies),
+            "updated_network_proxies": dict(network_proxies),
+            "raw_relative_change": 0.0,
+            "applied_relative_change": 0.0,
+            "mapping": {
+                "compute_energy": 0.0,
+                "compute_latency": 0.0,
+                "mapping_yaml_path": mapping_yaml_relpath,
+                "mapping_sha256": mapping_sha256,
+                "cost_summary": mapping_cost_summary,
+                "mapping_energy": {},
+                "mapping_latency": {},
+                "mapping_actions": {},
+            },
+            "network": {
+                "total_energy": float(network_result.total_energy),
+                "total_latency": float(network_result.total_latency),
+                "energy_per_network_access": float(
+                    network_result.energy_per_network_access
+                ),
+                "latency_per_network_access": float(
+                    network_result.latency_per_network_access
+                ),
+                "total_network_bytes": float(network_result.total_network_bytes),
+                "per_transfer": _json_ready(network_result.per_transfer),
+                "actual_summary": network_summary,
+            },
+            "transfer_count": len(transfers),
+            "total_bytes": total_bytes,
+            "allgather_pct": allgather_pct,
+            "collective_decisions": collective_decisions,
+            "estimated_actual_system": estimated_actual_system,
+            "direct_model": config,
+        }
+    ]
+
+    return {
+        "converged": True,
+        "iterations": iterations,
+        "final_network_proxies": dict(network_proxies),
+        "final_mapping_result": mapping_result,
+        "final_network_result": network_result,
+        "final_transfers": transfers,
+        "final_collective_decisions": collective_decisions,
+        "total_bytes": total_bytes,
+        "allgather_pct": allgather_pct,
+    }
+
+
 def run_feedback_loop(
     path,
     params,
@@ -1295,6 +1502,9 @@ def run_feedback_loop(
     final_mapping_result = None
     final_network_result = None
     converged = False
+
+    if _is_direct_gpt3_workload(params):
+        return run_direct_gpt3_workload(params, topology, mapping_dir)
 
     if mapping_dir is not None:
         mapping_dir.mkdir(parents=True, exist_ok=True)

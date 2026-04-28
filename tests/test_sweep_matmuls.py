@@ -3,13 +3,17 @@ from types import SimpleNamespace
 from network_topology.cost_model import CollectiveType
 
 from sweep_matmuls import (
+    DECOMPOSED_GPT3_MODEL,
     EVAL_CHIPS,
+    GPT3_EINSUM_SPECS,
     SCALE,
     _build_milestone2_topology_summary,
     _annotate_collective_decisions,
     _chip_sharded_rank_vars,
     _damp_network_proxies,
-    _direct_gpt3_network_transfers,
+    _decomposed_gpt3_config,
+    _gpt3_einsum_workload_yaml,
+    _is_decomposed_gpt3_workload,
     _estimate_actual_system_cost,
     _fallback_network_access_decisions,
     _infer_matmul_collectives,
@@ -210,24 +214,26 @@ def test_fallback_network_access_decisions_use_already_scaled_bytes():
     assert raw_decisions[0]["data_bytes"] == 64.0
 
 
-def test_direct_gpt3_workload_uses_two_allreduces_per_layer():
+def test_decomposed_gpt3_workload_specs_are_independent_single_einsums():
     params = {
+        "__decomposed_model": DECOMPOSED_GPT3_MODEL,
         "BATCH_SIZE": 1,
         "N_TOKENS": 8,
         "N_LAYERS": 3,
-        "BYTES_PER_VALUE": 1,
     }
 
-    config, transfers, decisions = _direct_gpt3_network_transfers(params)
+    config = _decomposed_gpt3_config(params)
+    names = [spec["name"] for spec in GPT3_EINSUM_SPECS]
+    yaml_text = _gpt3_einsum_workload_yaml(GPT3_EINSUM_SPECS[0])
 
+    assert _is_decomposed_gpt3_workload(params)
     assert config["hidden_dim"] == 96 * 128
     assert config["activation_bytes"] == 8 * 96 * 128
-    assert len(transfers) == 6
-    assert len(decisions) == 6
-    assert {transfer.collective_type for transfer in transfers} == {
-        CollectiveType.ALLREDUCE
-    }
-    assert sum(transfer.data_bytes for transfer in transfers) == 6 * 8 * 96 * 128
+    assert config["n_layers"] == 3
+    assert names == ["I", "V", "K", "Q", "QK", "QK_softmax", "AV", "Z", "FFA", "FFB"]
+    assert all("output" in spec["renames"] for spec in GPT3_EINSUM_SPECS)
+    assert 'einsum: "I[b, m, d] = I_in[b, m, d]"' in yaml_text
+    assert "renames: {input: I_in, output: I}" in yaml_text
 
 
 def test_damp_network_proxies_is_identity_when_disabled():

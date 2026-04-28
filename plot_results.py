@@ -8,6 +8,7 @@ Usage:
 """
 
 import json
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -69,6 +70,101 @@ def style_ax(ax, title=None, ylabel=None, xlabel=None):
         ax.set_xlabel(xlabel, fontsize=11, color=TEXT_COLOR)
 
 
+BASE_WORKLOAD_ORDER = [
+    "GPT3 175B",
+    "Small 2Kx8K", "Small 4Kx16K", "Medium 8Kx32K", "Medium 16Kx32K",
+    "Wide 8Kx256K", "VeryWide 2Kx256K", "Rect 64Kx128K",
+    "Square 128Kx128K", "Tall 256Kx64K", "LargeSquare 256Kx256K", "VeryTall 256Kx8K",
+]
+BASE_WORKLOAD_LABELS = {
+    "GPT3 175B": "GPT3\n175B",
+    "Small 2Kx8K": "Small\n2K×8K",
+    "Small 4Kx16K": "Small\n4K×16K",
+    "Medium 8Kx32K": "Medium\n8K×32K",
+    "Medium 16Kx32K": "Medium\n16K×32K",
+    "Square 128Kx128K": "Square\n128K×128K",
+    "Wide 8Kx256K": "Wide\n8K×256K",
+    "Tall 256Kx64K": "Tall\n256K×64K",
+    "VeryWide 2Kx256K": "VeryWide\n2K×256K",
+    "Rect 64Kx128K": "Rect\n64K×128K",
+    "LargeSquare 256Kx256K": "LargeSq\n256K×256K",
+    "VeryTall 256Kx8K": "VeryTall\n256K×8K",
+}
+BASE_WORKLOAD_SHORTS = {
+    "GPT3 175B": "GPT3",
+    "Small 2Kx8K": "2K×8K",
+    "Small 4Kx16K": "4K×16K",
+    "Medium 8Kx32K": "8K×32K",
+    "Medium 16Kx32K": "16K×32K",
+    "Square 128Kx128K": "128K×128K",
+    "Wide 8Kx256K": "8K×256K",
+    "Tall 256Kx64K": "256K×64K",
+    "VeryWide 2Kx256K": "2K×256K",
+    "Rect 64Kx128K": "64K×128K",
+    "LargeSquare 256Kx256K": "256K×256K",
+    "VeryTall 256Kx8K": "256K×8K",
+}
+
+
+def _batched_workload_parts(workload_name):
+    match = re.match(r"^Batched B(\d+) (.+)$", workload_name)
+    if not match:
+        return None
+    return int(match.group(1)), match.group(2)
+
+
+def _workload_order_key(workload_name):
+    batched = _batched_workload_parts(workload_name)
+    if batched:
+        batch_size, base_name = batched
+        try:
+            base_idx = BASE_WORKLOAD_ORDER.index(base_name)
+        except ValueError:
+            base_idx = len(BASE_WORKLOAD_ORDER)
+        return (1, batch_size, base_idx, base_name)
+    try:
+        return (0, 0, BASE_WORKLOAD_ORDER.index(workload_name), workload_name)
+    except ValueError:
+        return (2, 0, len(BASE_WORKLOAD_ORDER), workload_name)
+
+
+def _workload_label(workload_name):
+    batched = _batched_workload_parts(workload_name)
+    if batched:
+        batch_size, base_name = batched
+        base_label = BASE_WORKLOAD_LABELS.get(base_name, base_name).replace("\n", " ")
+        return f"B{batch_size}\n{base_label}"
+    return BASE_WORKLOAD_LABELS.get(workload_name, workload_name)
+
+
+def _workload_short(workload_name):
+    batched = _batched_workload_parts(workload_name)
+    if batched:
+        batch_size, base_name = batched
+        base_short = BASE_WORKLOAD_SHORTS.get(base_name, base_name.split()[0])
+        return f"B{batch_size}\n{base_short}"
+    return BASE_WORKLOAD_SHORTS.get(workload_name, workload_name.split()[0])
+
+
+def _format_dim_value(value, dim_name=None):
+    try:
+        value = int(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if dim_name == "B":
+        return f"{value:,}"
+    if value >= 1024 and value % 1024 == 0:
+        return f"{value // 1024}K"
+    return f"{value:,}"
+
+
+def _entries_by_workload(entries):
+    by_workload = {}
+    for (desc, _), (result, _) in entries.items():
+        by_workload.setdefault(desc, result.get("params", {}))
+    return by_workload
+
+
 def load_entries(run_dir: Path):
     """Load all per-job JSON results."""
     entries = {}
@@ -99,20 +195,46 @@ def load_entries(run_dir: Path):
 # ===========================================================================
 # Figure 1: Workload descriptions visual
 # ===========================================================================
-def fig_workloads(out_dir):
-    workloads = [
-        ("Small\n2K×8K", 2048, 8192, "#D8C7A3"),
-        ("Small\n4K×16K", 4096, 16384, "#B6D7A8"),
-        ("Medium\n8K×32K", 8192, 32768, "#A4C2F4"),
-        ("Medium\n16K×32K", 16384, 32768, "#D5A6BD"),
-        ("Wide (FFN)\n8K×256K", 8192, 262144, "#F4A7A0"),
-        ("VeryWide\n2K×256K", 2048, 262144, "#F9D986"),
-        ("Rect\n64K×128K", 65536, 131072, "#C4B7E0"),
-        ("Square\n128K×128K", 131072, 131072, "#7EB8DA"),
-        ("Tall\n256K×64K", 262144, 65536, "#A8D5BA"),
-        ("LargeSq\n256K×256K", 262144, 262144, "#6BC5B0"),
-        ("VeryTall\n256K×8K", 262144, 8192, "#E8B4B8"),
+def fig_workloads(out_dir, entries=None):
+    palette = [
+        "#D8C7A3", "#B6D7A8", "#A4C2F4", "#D5A6BD", "#F4A7A0",
+        "#F9D986", "#C4B7E0", "#7EB8DA", "#A8D5BA", "#6BC5B0", "#E8B4B8",
     ]
+
+    if entries:
+        workloads = []
+        by_workload = _entries_by_workload(entries)
+        for idx, desc in enumerate(sorted(by_workload, key=_workload_order_key)):
+            params = by_workload[desc]
+            dims = []
+            if "BATCH_SIZE" in params and _batched_workload_parts(desc):
+                dims.append(("B\n(batch)", params["BATCH_SIZE"], "B"))
+            if "M" in params:
+                dims.append(("M\n(rows)", params["M"], "M"))
+            if "KN" in params:
+                dims.append(("K=N\n(cols)", params["KN"], "KN"))
+            if "N_TOKENS" in params and not dims:
+                dims.append(("Tokens", params["N_TOKENS"], "N_TOKENS"))
+            if "N_LAYERS" in params and not dims:
+                dims.append(("Layers", params["N_LAYERS"], "N_LAYERS"))
+            if dims:
+                workloads.append((_workload_label(desc), dims, palette[idx % len(palette)]))
+    else:
+        workloads = [
+            ("Small\n2K×8K", [("M\n(rows)", 2048, "M"), ("K=N\n(cols)", 8192, "KN")], "#D8C7A3"),
+            ("Small\n4K×16K", [("M\n(rows)", 4096, "M"), ("K=N\n(cols)", 16384, "KN")], "#B6D7A8"),
+            ("Medium\n8K×32K", [("M\n(rows)", 8192, "M"), ("K=N\n(cols)", 32768, "KN")], "#A4C2F4"),
+            ("Medium\n16K×32K", [("M\n(rows)", 16384, "M"), ("K=N\n(cols)", 32768, "KN")], "#D5A6BD"),
+            ("Wide (FFN)\n8K×256K", [("M\n(rows)", 8192, "M"), ("K=N\n(cols)", 262144, "KN")], "#F4A7A0"),
+            ("VeryWide\n2K×256K", [("M\n(rows)", 2048, "M"), ("K=N\n(cols)", 262144, "KN")], "#F9D986"),
+            ("Rect\n64K×128K", [("M\n(rows)", 65536, "M"), ("K=N\n(cols)", 131072, "KN")], "#C4B7E0"),
+            ("Square\n128K×128K", [("M\n(rows)", 131072, "M"), ("K=N\n(cols)", 131072, "KN")], "#7EB8DA"),
+            ("Tall\n256K×64K", [("M\n(rows)", 262144, "M"), ("K=N\n(cols)", 65536, "KN")], "#A8D5BA"),
+            ("LargeSq\n256K×256K", [("M\n(rows)", 262144, "M"), ("K=N\n(cols)", 262144, "KN")], "#6BC5B0"),
+            ("VeryTall\n256K×8K", [("M\n(rows)", 262144, "M"), ("K=N\n(cols)", 8192, "KN")], "#E8B4B8"),
+        ]
+    if not workloads:
+        return
 
     ncols = 4
     nrows = (len(workloads) + ncols - 1) // ncols
@@ -121,19 +243,23 @@ def fig_workloads(out_dir):
     fig.suptitle("Workloads Tested", fontsize=16, fontweight="bold", color=TEXT_COLOR, y=0.98)
 
     flat_axes = axes.flatten()
-    for i, (label, m, k, color) in enumerate(workloads):
+    for i, (label, dims, color) in enumerate(workloads):
         ax = flat_axes[i]
         ax.set_facecolor(BG_COLOR)
-        bars = ax.bar(["M\n(rows)", "K=N\n(cols)"], [m, k], color=[color, color],
+        dim_labels = [d[0] for d in dims]
+        dim_values = [int(d[1]) for d in dims]
+        dim_names = [d[2] for d in dims]
+        bars = ax.bar(dim_labels, dim_values, color=[color] * len(dim_values),
                       edgecolor="white", linewidth=2, width=0.5, zorder=3, alpha=0.85)
         ax.set_title(label, fontsize=11, fontweight="bold", color=TEXT_COLOR, pad=8)
         if i % ncols == 0:
             ax.set_ylabel("Dimension size", fontsize=9, color=TEXT_COLOR)
-        ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: f"{x/1000:.0f}K"))
+        ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda x, _: _format_dim_value(x)))
         style_ax(ax)
-        for bar, val in zip(bars, [m, k]):
-            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max(m,k)*0.03,
-                    f"{val//1024}K", ha="center", va="bottom", fontsize=9,
+        max_dim = max(dim_values)
+        for bar, val, dim_name in zip(bars, dim_values, dim_names):
+            ax.text(bar.get_x() + bar.get_width()/2, bar.get_height() + max_dim * 0.03,
+                    _format_dim_value(val, dim_name), ha="center", va="bottom", fontsize=9,
                     fontweight="bold", color=TEXT_COLOR)
 
     # Hide unused subplot
@@ -208,29 +334,12 @@ def fig_topologies(out_dir):
 # ===========================================================================
 def _available_workloads(entries):
     """Find all workloads with at least 2 topology results, in a stable order."""
-    ALL_WORKLOADS = [
-        "GPT3 175B",
-        "Small 2Kx8K", "Small 4Kx16K", "Medium 8Kx32K", "Medium 16Kx32K",
-        "Wide 8Kx256K", "VeryWide 2Kx256K", "Rect 64Kx128K",
-        "Square 128Kx128K", "Tall 256Kx64K", "LargeSquare 256Kx256K", "VeryTall 256Kx8K",
-    ]
-    WL_LABELS = {
-        "GPT3 175B": "GPT3\n175B",
-        "Small 2Kx8K": "Small\n2K×8K",
-        "Small 4Kx16K": "Small\n4K×16K",
-        "Medium 8Kx32K": "Medium\n8K×32K",
-        "Medium 16Kx32K": "Medium\n16K×32K",
-        "Square 128Kx128K": "Square\n128K×128K", "Wide 8Kx256K": "Wide\n8K×256K",
-        "Tall 256Kx64K": "Tall\n256K×64K", "VeryWide 2Kx256K": "VeryWide\n2K×256K",
-        "Rect 64Kx128K": "Rect\n64K×128K", "LargeSquare 256Kx256K": "LargeSq\n256K×256K",
-        "VeryTall 256Kx8K": "VeryTall\n256K×8K",
-    }
     wl_with_data = []
-    for wl in ALL_WORKLOADS:
+    for wl in sorted({desc for desc, _ in entries}, key=_workload_order_key):
         count = sum(1 for tn in TOPO_ORDER if (wl, tn) in entries)
         if count >= 2:
             wl_with_data.append(wl)
-    labels = [WL_LABELS.get(w, w) for w in wl_with_data]
+    labels = [_workload_label(w) for w in wl_with_data]
     return wl_with_data, labels
 
 
@@ -352,7 +461,7 @@ def fig_latency_breakdown(entries, out_dir):
             if (wl, tn) not in entries:
                 continue
             td = entries[(wl, tn)][1]
-            short_wl = wl.split()[0]
+            short_wl = _workload_short(wl)
             labels.append(f"{short_wl} — {tn}")
             compute_vals.append(td["compute_latency"])
             network_vals.append(td["total_latency"])
@@ -393,9 +502,6 @@ def fig_latency_breakdown(entries, out_dir):
 # Figure 6: Torus aspect ratio comparison
 # ===========================================================================
 def fig_torus_aspect(entries, out_dir):
-    fig, ax = plt.subplots(figsize=(max(10, 1.5 * 7), 5.5))
-    fig.patch.set_facecolor("white")
-
     torus_topos = ["Torus 4x4x4", "Torus 8x2x4", "Torus 16x2x2", "Ring 64"]
     torus_labels = ["4×4×4\n(cube)", "8×2×4", "16×2×2", "Ring 64"]
     torus_colors = [COLORS[t] for t in torus_topos]
@@ -403,7 +509,12 @@ def fig_torus_aspect(entries, out_dir):
     # Use all workloads that have Torus 4x4x4 as baseline
     workloads, wl_labels = _available_workloads(entries)
     workloads = [wl for wl in workloads if (wl, "Torus 4x4x4") in entries]
-    wl_short = [wl.split()[0] for wl in workloads]
+    if not workloads:
+        return
+    wl_short = [_workload_short(wl) for wl in workloads]
+
+    fig, ax = plt.subplots(figsize=(max(10, 0.85 * len(workloads)), 5.5))
+    fig.patch.set_facecolor("white")
 
     x = np.arange(len(workloads))
     width = min(0.18, 0.8 / len(torus_topos))
@@ -518,8 +629,10 @@ def fig_gpt3_stress(out_dir):
 def fig_summary(entries, out_dir):
     workloads, wl_labels = _available_workloads(entries)
     n_wl = len(workloads)
+    if not workloads:
+        return
 
-    fig = plt.figure(figsize=(16, 10))
+    fig = plt.figure(figsize=(max(16, 0.75 * n_wl), 10))
     fig.patch.set_facecolor("white")
     fig.suptitle("Network Topology Impact — Summary Dashboard",
                  fontsize=18, fontweight="bold", color=TEXT_COLOR, y=0.97)
@@ -551,7 +664,7 @@ def fig_summary(entries, out_dir):
 
     # --- Panel 2: Network % of total latency ---
     ax2 = fig.add_subplot(gs[0, 1])
-    wl_short = [wl.split()[0] for wl in workloads]
+    wl_short = [_workload_short(wl) for wl in workloads]
     for tn in ["Torus 4x4x4", "Ring 64"]:
         pcts = []
         pct_labels = []
@@ -679,7 +792,7 @@ def fig_6d_advantage(entries, out_dir):
     """Show 6D Hypercube speedup over Torus 4x4x4 for all available workloads."""
     workloads, _ = _available_workloads(entries)
     # Only show workloads where both 6D and Torus exist
-    paired = [(wl, wl.split()[0]) for wl in workloads
+    paired = [(wl, _workload_short(wl)) for wl in workloads
               if (wl, "6D Hypercube") in entries and (wl, "Torus 4x4x4") in entries]
     if not paired:
         print("  Skipping fig_6d_advantage: no paired 6D/Torus data")
@@ -746,7 +859,7 @@ def main():
     out_dir.mkdir(exist_ok=True)
 
     print(f"Generating figures in {out_dir}/...")
-    fig_workloads(out_dir)
+    fig_workloads(out_dir, entries)
     fig_topologies(out_dir)
     fig_latency_comparison(entries, out_dir)
     fig_energy_breakdown(entries, out_dir)

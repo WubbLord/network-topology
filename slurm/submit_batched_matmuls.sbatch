@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH -J submit-gpt3-175b
-#SBATCH -p mit_quicktest
+#SBATCH -J submit-batched-mm
+#SBATCH -p mit_normal
 #SBATCH -c 1
 #SBATCH --mem=1G
 #SBATCH -t 00:05:00
-#SBATCH -o submit-gpt3-175b-%j.out
-#SBATCH -e submit-gpt3-175b-%j.err
+#SBATCH -o submit-batched-mm-%j.out
+#SBATCH -e submit-batched-mm-%j.err
 
 set -euo pipefail
 
@@ -54,20 +54,20 @@ resolve_project_dir() {
 
 PROJECT_DIR="$(resolve_project_dir)"
 LOGDIR="${PROJECT_DIR}/slurm/logs"
-RUN_DIR="${PROJECT_DIR}/logs/slurm-gpt3-175b-${SLURM_JOB_ID}"
+RUN_DIR="${PROJECT_DIR}/logs/slurm-batched-matmuls-${SLURM_JOB_ID}"
 mkdir -p "$LOGDIR" "$RUN_DIR"
 
 cd "$PROJECT_DIR"
 
 ARRAY_JOB=$(sbatch --parsable \
     --partition=mit_normal \
-    --time=02:00:00 \
-    --cpus-per-task=4 \
-    --mem=8G \
+    --time=06:00:00 \
+    --cpus-per-task=8 \
+    --mem=64G \
     --chdir="$LOGDIR" \
-    --array="0-3" \
+    --array="0-83%2" \
     --export=ALL,PROJECT_DIR="${PROJECT_DIR}",RUN_DIR="${RUN_DIR}" \
-    slurm/sweep_gpt3_175b.sbatch)
+    slurm/sweep_batched_matmuls.sbatch)
 
 AGG_JOB=$(sbatch --parsable \
     --partition=mit_quicktest \
@@ -79,8 +79,8 @@ AGG_JOB=$(sbatch --parsable \
     --export=ALL,PROJECT_DIR="${PROJECT_DIR}",RUN_DIR="${RUN_DIR}" \
     slurm/aggregate.sbatch)
 
-echo "GPT3 175B topology array submitted: $ARRAY_JOB"
+echo "Batched matmul topology array submitted: $ARRAY_JOB"
 echo "Aggregation job submitted: $AGG_JOB"
 echo "Results will be in: ${RUN_DIR}/results.json"
 echo "Monitor: squeue -u \$USER"
-echo "Logs:    ${LOGDIR}/gpt3-175b-sweep-${ARRAY_JOB}-<task>.out"
+echo "Logs:    ${LOGDIR}/batched-mm-sweep-${ARRAY_JOB}-<task>.out"

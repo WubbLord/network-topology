@@ -1,8 +1,12 @@
 import numpy as np
 import pytest
 
-from network_topology import compute_network_cost, make_tpu_v4_topology
-from network_topology.cost_model import CollectiveType, NetworkTransfer
+from network_topology import (
+    compute_network_cost,
+    compute_network_phased_cost,
+    make_tpu_v4_topology,
+)
+from network_topology.cost_model import CollectiveType, NetworkPhase, NetworkTransfer
 from network_topology.topology import Custom, Mesh3D, Ring, Torus3D
 
 
@@ -116,3 +120,49 @@ def test_compute_network_cost_rejects_chips_outside_topology():
                 )
             ],
         )
+
+
+def test_compute_network_phased_cost_merges_concurrent_link_loads():
+    topo = Custom(
+        adj_matrix=np.array(
+            [
+                [0, 1, 0],
+                [1, 0, 1],
+                [0, 1, 0],
+            ]
+        ),
+        link_bandwidth=10.0,
+        energy_per_bit_per_hop=1.0,
+        per_hop_latency=0.0,
+    )
+    phases = [
+        NetworkPhase(
+            "dispatch",
+            [
+                NetworkTransfer(
+                    "a",
+                    10.0,
+                    CollectiveType.POINT_TO_POINT,
+                    src_chip=0,
+                    dst_chips=[2],
+                ),
+                NetworkTransfer(
+                    "b",
+                    10.0,
+                    CollectiveType.POINT_TO_POINT,
+                    src_chip=0,
+                    dst_chips=[1],
+                ),
+            ],
+        )
+    ]
+
+    result = compute_network_phased_cost(topo, phases)
+
+    assert result.total_energy == 240.0
+    assert result.total_latency == 2.0
+    assert result.total_network_bytes == 20.0
+    assert result.energy_per_network_access == 12.0
+    assert result.latency_per_network_access == 0.1
+    assert result.per_phase[0]["max_link_load"] == 20.0
+    assert result.per_phase[0]["link_count"] == 2

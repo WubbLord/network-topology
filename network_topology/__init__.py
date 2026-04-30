@@ -5,6 +5,7 @@ from network_topology.topology import (
     _make_ring_adj, _make_mesh_adj, _make_torus_adj, _make_circulant_adj,
 )
 from network_topology.cost_model import (
-    NetworkCostResult, NetworkTransfer, CollectiveType, compute_network_cost,
+    NetworkCostResult, NetworkPhase, NetworkTransfer, PhasedNetworkCostResult,
+    CollectiveType, compute_network_cost, compute_network_phased_cost,
 )
 from network_topology.tpu_v4 import make_tpu_v4_topology

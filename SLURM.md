@@ -47,6 +47,14 @@ sbatch \
   /home/zhangbr/network-topology/slurm/submit_large_map64.sbatch
 ```
 
+Synthetic MoE token dispatch/combine sweep:
+
+```bash
+sbatch \
+  --chdir=/home/nvemuri/projects/network-topology/slurm/logs \
+  /home/nvemuri/projects/network-topology/slurm/sweep_moe.sbatch
+```
+
 ## Scripts
 
 | Script | Purpose | Resources | Output location |
@@ -60,6 +68,7 @@ sbatch \
 | `slurm/submit_large_map64.sbatch` | Wrapper for the four large matmul workloads with `MAP_CHIPS=64` and `EVAL_CHIPS=64`. Uses workload array indices `28-43`, corresponding to `Square 128Kx128K`, `Tall 256Kx64K`, `LargeSquare 256Kx256K`, and `VeryTall 256Kx8K` across the 4 core topologies. | Submit wrapper: 1 CPU, 1 GB, 5 min. Array: 16 CPUs, 128 GB, 12 hours per task, `28-43%1`. | `logs/slurm-large-map64-<submit_job>/results.json` |
 | `slurm/submit_gpt3_175b.sbatch` | Slurm wrapper for the GPT-3 175B sweep. Submits array tasks for the 4 core topologies and an aggregate dependency. | Submit wrapper: 1 CPU, 1 GB, 5 min. Array override: 4 CPUs, 8 GB, 2 hours. |
 | `slurm/sweep_gpt3_175b.sbatch` | Runs GPT-3 175B on one topology per array task. | Default headers: 4 CPUs, 8 GB, 2 hours. | `logs/slurm-gpt3-175b-<submit_job>/` |
+| `slurm/sweep_moe.sbatch` | Runs the synthetic MoE sweep on the CPU partition. | 1 CPU, 4 GB, 15 minutes on `mit_normal`. | `logs/slurm-moe-<job>/moe_results.json` |
 | `slurm/aggregate.sbatch` | Merges partial JSON files after an array job succeeds. | 1 CPU, 4 GB, 5 min. | Writes `results.json` and usually `milestone2_analysis.json`. |
 
 ## Workloads
@@ -88,6 +97,17 @@ Available in `sweep_matmuls.py`:
 The batched matmul sweep uses the same 7 base workloads, with a leading batch
 rank `BATCH_SIZE` in `{256, 512, 1024}`. The workload names are of the form
 `Batched B256 Small 2Kx8K`, `Batched B512 Small 2Kx8K`, and so on.
+
+`sweep_moe.py` includes synthetic MoE workloads that place tokens and experts on
+different chips, then compare `clustered`, `spread`, and `topology_aware`
+expert placement. Dispatch and combine are costed as two concurrent
+point-to-point phases.
+
+MoE figures can be generated from a completed run with:
+
+```bash
+.venv/bin/python plot_moe_results.py logs/slurm-moe-12790884
+```
 
 ## Topologies
 

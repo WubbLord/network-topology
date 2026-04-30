@@ -33,6 +33,12 @@ class NetworkTransfer:
 
 
 @dataclass
+class NetworkPhase:
+    name: str
+    transfers: list[NetworkTransfer]
+
+
+@dataclass
 class NetworkCostResult:
     total_energy: float
     total_latency: float
@@ -50,6 +56,29 @@ class NetworkCostResult:
             lines.append(
                 f"  {t['tensor']:>12s} {t['collective']:>15s} "
                 f"E={t['energy']:.4e} L={t['latency']:.4e} {t['data_bytes']:.2e}B"
+            )
+        return "\n".join(lines)
+
+
+@dataclass
+class PhasedNetworkCostResult:
+    total_energy: float
+    total_latency: float
+    per_phase: list[dict]
+    energy_per_network_access: float
+    latency_per_network_access: float
+    total_network_bytes: float
+
+    def summary(self) -> str:
+        lines = [
+            f"Energy: {self.total_energy:.4e} J, Latency: {self.total_latency:.4e} s, "
+            f"Bytes: {self.total_network_bytes:.2e}",
+        ]
+        for phase in self.per_phase:
+            lines.append(
+                f"  {phase['phase']:>12s} transfers={phase['transfer_count']:>4d} "
+                f"E={phase['energy']:.4e} L={phase['latency']:.4e} "
+                f"{phase['data_bytes']:.2e}B"
             )
         return "\n".join(lines)
 
@@ -140,3 +169,68 @@ def compute_network_cost(topology: Topology, transfers: list[NetworkTransfer]) -
     lpb = total_latency / total_bytes if total_bytes > 0 else 0
 
     return NetworkCostResult(total_energy, total_latency, per_transfer, epb, lpb, total_bytes)
+
+
+def compute_network_phased_cost(
+    topology: Topology, phases: list[NetworkPhase]
+) -> PhasedNetworkCostResult:
+    """
+    Compute network cost for phase-synchronous traffic.
+
+    Transfers inside one phase are routed concurrently by merging their link
+    loads before costing. Phase latencies are then summed in order. This is
+    useful for sparse all-to-all style workloads such as MoE token dispatch and
+    output combine, where many point-to-point transfers share one logical step.
+    """
+    if not phases:
+        return PhasedNetworkCostResult(0, 0, [], 0, 0, 0)
+
+    per_phase = []
+    total_bytes = 0.0
+    total_energy = 0.0
+    total_latency = 0.0
+
+    for phase in phases:
+        merged_loads = {}
+        phase_bytes = 0.0
+        for transfer in phase.transfers:
+            loads = _get_transfer_link_loads(topology, transfer)
+            for link, data_bytes in loads.items():
+                merged_loads[link] = merged_loads.get(link, 0.0) + data_bytes
+            phase_bytes += float(transfer.data_bytes)
+
+        phase_energy, phase_latency = topology._cost_from_link_loads(merged_loads)
+        max_link_load = max(merged_loads.values(), default=0.0)
+        serialization_latency = (
+            max_link_load / topology.link_bandwidth if merged_loads else 0.0
+        )
+        first_byte_hops = topology.diameter if merged_loads else 0
+        first_byte_latency = (
+            first_byte_hops * topology.per_hop_latency if merged_loads else 0.0
+        )
+
+        per_phase.append(
+            {
+                "phase": phase.name,
+                "energy": phase_energy,
+                "latency": phase_latency,
+                "data_bytes": phase_bytes,
+                "transfer_count": len(phase.transfers),
+                "link_count": len(merged_loads),
+                "max_link_load": max_link_load,
+                "serialization_latency": serialization_latency,
+                "first_byte_latency": first_byte_latency,
+                "first_byte_hops": first_byte_hops,
+                "per_hop_latency": topology.per_hop_latency,
+                "link_bandwidth": topology.link_bandwidth,
+            }
+        )
+        total_bytes += phase_bytes
+        total_energy += phase_energy
+        total_latency += phase_latency
+
+    epb = total_energy / total_bytes if total_bytes > 0 else 0
+    lpb = total_latency / total_bytes if total_bytes > 0 else 0
+    return PhasedNetworkCostResult(
+        total_energy, total_latency, per_phase, epb, lpb, total_bytes
+    )

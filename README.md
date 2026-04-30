@@ -18,6 +18,7 @@ The core idea is simple: route each collective onto physical links, compute that
 | `network_topology/tpu_v4.py` | TPU v4 constants and a convenience factory for TPU-like topologies |
 | `accelforge_configs/tpu_v4_distributed_1d.yaml` | AccelForge architecture spec used to map workloads quickly on a simplified 1D chip array |
 | `sweep_matmuls.py` | End-to-end script that maps workloads with AccelForge, extracts network traffic, and evaluates multiple topologies |
+| `sweep_moe.py` | Synthetic MoE token-dispatch/combine sweep with expert-placement strategies |
 | `tests/` | Local pytest coverage for the topology and cost-model behavior |
 | `EXPERIMENTS.md` | Example results and higher-level conclusions |
 
@@ -150,6 +151,43 @@ ACCELFORGE_ROOT=/path/to/accelforge .venv/bin/python sweep_matmuls.py
 ```
 
 This uses the local architecture config in `accelforge_configs/tpu_v4_distributed_1d.yaml` and workload templates from `$ACCELFORGE_ROOT/examples/workloads`. If `ACCELFORGE_ROOT` is unset, the script falls back to a sibling checkout at `../accelforge`. The full run is also saved to `logs/<timestamp>/results.json`.
+
+### MoE Sweep
+
+The MoE sweep is synthetic and does not require AccelForge. It models token
+dispatch to expert devices and the output combine step as two phase-synchronous
+point-to-point traffic phases.
+
+The default workloads use 64 chips and vary:
+
+- expert count: 8, 16, or 64 experts
+- routing fanout: top-1 or top-2
+- locality bias: uniform routing or mostly local expert routing
+- token shape: `tokens_per_chip * hidden_size * bytes_per_value`
+
+For each workload, the sweep compares three expert placements:
+
+- `clustered`: experts on low-numbered chips
+- `spread`: experts evenly spread across the chip-id range
+- `topology_aware`: starts from clustered, spread, and hop-greedy seeds, then
+  runs a small exact-latency local search using the topology cost model
+
+```bash
+.venv/bin/python sweep_moe.py
+```
+
+On MIT ORCD/Engaging, submit the CPU Slurm wrapper:
+
+```bash
+sbatch --chdir=/home/nvemuri/projects/network-topology/slurm/logs \
+  /home/nvemuri/projects/network-topology/slurm/sweep_moe.sbatch
+```
+
+Plot a completed MoE run with:
+
+```bash
+.venv/bin/python plot_moe_results.py logs/slurm-moe-12790884
+```
 
 ## Running Tests
 

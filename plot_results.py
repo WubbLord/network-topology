@@ -30,7 +30,6 @@ hw = dict(link_bandwidth=ICI_LINK_BW_UNIDIR, energy_per_bit_per_hop=ICI_ENERGY_P
 # ---- Pastel color palette ----
 COLORS = {
     "Circulant {1,5,17}": "#AA96DA",   # lilac (proposed - best)
-    "6D Hypercube":       "#6BC5B0",   # teal (proposed)
     "Torus 4x4x4":       "#7EB8DA",   # soft blue
     "4D Torus 4x4x2x2":  "#A8D5BA",   # soft green
     "5D Torus 4x2x2x2x2":"#C4B7E0",   # soft purple
@@ -45,9 +44,9 @@ BG_COLOR      = "#FAFAFA"
 GRID_COLOR    = "#E8E8E8"
 TEXT_COLOR     = "#333333"
 
-TOPO_ORDER = ["Circulant {1,5,17}", "6D Hypercube", "Torus 4x4x4", "4D Torus 4x4x2x2", "Mesh 4x4x4", "Ring 64"]
+TOPO_ORDER = ["Circulant {1,5,17}", "Torus 4x4x4", "4D Torus 4x4x2x2", "Mesh 4x4x4", "Ring 64"]
 TOPO_SHORT = {"Circulant {1,5,17}": "Circulant\n{1,5,17}",
-              "6D Hypercube": "6D\nHypercube", "Torus 4x4x4": "Torus\n4×4×4",
+              "Torus 4x4x4": "Torus\n4×4×4",
               "4D Torus 4x4x2x2": "4D Torus\n4×4×2×2", "Mesh 4x4x4": "Mesh\n4×4×4",
               "Torus 8x2x4": "Torus\n8×2×4", "Torus 16x2x2": "Torus\n16×2×2",
               "Ring 64": "Ring\n64",
@@ -113,6 +112,14 @@ def _batched_workload_parts(workload_name):
     return int(match.group(1)), match.group(2)
 
 
+def _tall_workload_parts(workload_name):
+    match = re.match(r"^(?:B(\d+) )?([0-9]+K)x([0-9]+K)$", workload_name)
+    if not match:
+        return None
+    batch_size, n_size, k_size = match.groups()
+    return int(batch_size or 1), n_size, k_size
+
+
 def _workload_order_key(workload_name):
     batched = _batched_workload_parts(workload_name)
     if batched:
@@ -122,10 +129,14 @@ def _workload_order_key(workload_name):
         except ValueError:
             base_idx = len(BASE_WORKLOAD_ORDER)
         return (1, batch_size, base_idx, base_name)
+    tall = _tall_workload_parts(workload_name)
+    if tall:
+        batch_size, n_size, k_size = tall
+        return (2, batch_size, int(n_size[:-1]), int(k_size[:-1]))
     try:
         return (0, 0, BASE_WORKLOAD_ORDER.index(workload_name), workload_name)
     except ValueError:
-        return (2, 0, len(BASE_WORKLOAD_ORDER), workload_name)
+        return (3, 0, len(BASE_WORKLOAD_ORDER), workload_name)
 
 
 def _workload_label(workload_name):
@@ -134,6 +145,11 @@ def _workload_label(workload_name):
         batch_size, base_name = batched
         base_label = BASE_WORKLOAD_LABELS.get(base_name, base_name).replace("\n", " ")
         return f"B{batch_size}\n{base_label}"
+    tall = _tall_workload_parts(workload_name)
+    if tall:
+        batch_size, n_size, k_size = tall
+        prefix = "" if batch_size == 1 else f"B{batch_size}\n"
+        return f"{prefix}{n_size}x{k_size}"
     return BASE_WORKLOAD_LABELS.get(workload_name, workload_name)
 
 
@@ -143,6 +159,11 @@ def _workload_short(workload_name):
         batch_size, base_name = batched
         base_short = BASE_WORKLOAD_SHORTS.get(base_name, base_name.split()[0])
         return f"B{batch_size}\n{base_short}"
+    tall = _tall_workload_parts(workload_name)
+    if tall:
+        batch_size, n_size, k_size = tall
+        prefix = "" if batch_size == 1 else f"B{batch_size}\n"
+        return f"{prefix}{n_size}x{k_size}"
     return BASE_WORKLOAD_SHORTS.get(workload_name, workload_name.split()[0])
 
 
@@ -280,7 +301,6 @@ def fig_topologies(out_dir):
     from network_topology.topology import CirculantHD
     topos = {
         "Circulant {1,5,17}": CirculantHD(64, (1,5,17), **hw),
-        "6D Hypercube": TorusND(dims=(2,2,2,2,2,2), **hw),
         "Torus 4x4x4": Torus3D(dims=(4,4,4), **hw),
         "4D Torus 4x4x2x2": TorusND(dims=(4,4,2,2), **hw),
         "Mesh 4x4x4": Mesh3D(dims=(4,4,4), **hw),
@@ -559,7 +579,6 @@ def fig_gpt3_stress(out_dir):
     from network_topology.topology import CirculantHD
     topos = {
         "Circulant {1,5,17}": CirculantHD(64, (1,5,17), **hw),
-        "6D Hypercube": TorusND(dims=(2,2,2,2,2,2), **hw),
         "Torus 4x4x4": Torus3D(dims=(4,4,4), **hw),
         "Mesh 4x4x4": Mesh3D(dims=(4,4,4), **hw),
         "Ring 64": Ring(num_chips=64, **hw),
@@ -584,11 +603,10 @@ def fig_gpt3_stress(out_dir):
                  fontsize=16, fontweight="bold", color=TEXT_COLOR, y=0.98)
 
     gpt_colors = {"Circulant {1,5,17}": COLORS["Circulant {1,5,17}"],
-                  "6D Hypercube": COLORS["6D Hypercube"],
                   "Torus 4x4x4": COLORS["Torus 4x4x4"],
                   "Mesh 4x4x4": COLORS["Mesh 4x4x4"],
                   "Ring 64": COLORS["Ring 64"]}
-    gpt_topos = ["Circulant {1,5,17}", "6D Hypercube", "Torus 4x4x4", "Mesh 4x4x4", "Ring 64"]
+    gpt_topos = ["Circulant {1,5,17}", "Torus 4x4x4", "Mesh 4x4x4", "Ring 64"]
 
     for ax_idx, (model_name, layers, hidden, bpv) in enumerate(configs):
         ax = axes[ax_idx]
@@ -684,7 +702,7 @@ def fig_summary(entries, out_dir):
 
     # --- Panel 3: Speedup vs Ring ---
     ax3 = fig.add_subplot(gs[0, 2])
-    for tn in ["6D Hypercube", "Torus 4x4x4", "Mesh 4x4x4"]:
+    for tn in ["Torus 4x4x4", "Mesh 4x4x4"]:
         speedups = []
         sp_labels = []
         for wl, sl in zip(workloads, wl_short):
@@ -768,9 +786,6 @@ def fig_summary(entries, out_dir):
         f"  of total latency\n\n"
         f"▸ Torus vs Ring:\n"
         f"  {avg_torus_speedup:.2f}× faster avg\n\n"
-        f"▸ 6D Hypercube:\n"
-        f"  same links/chip,\n"
-        f"  ~1.5× faster AllReduce\n\n"
         f"▸ {n_wl} workloads tested"
     )
     ax5.text(0.1, 0.95, insight_text, transform=ax5.transAxes,
@@ -780,65 +795,6 @@ def fig_summary(entries, out_dir):
                        edgecolor="#C8D8F0", alpha=0.9))
 
     path = out_dir / "8_summary_dashboard.png"
-    fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
-    plt.close(fig)
-    print(f"  Saved {path}")
-
-
-# ===========================================================================
-# Figure 9: 6D Hypercube advantage (Milestone 3 proposal)
-# ===========================================================================
-def fig_6d_advantage(entries, out_dir):
-    """Show 6D Hypercube speedup over Torus 4x4x4 for all available workloads."""
-    workloads, _ = _available_workloads(entries)
-    # Only show workloads where both 6D and Torus exist
-    paired = [(wl, _workload_short(wl)) for wl in workloads
-              if (wl, "6D Hypercube") in entries and (wl, "Torus 4x4x4") in entries]
-    if not paired:
-        print("  Skipping fig_6d_advantage: no paired 6D/Torus data")
-        return
-
-    wl_names = [p[0] for p in paired]
-    wl_short = [p[1] for p in paired]
-
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5.5))
-    fig.patch.set_facecolor("white")
-    fig.suptitle("Milestone 3: 6D Hypercube vs Torus 4×4×4",
-                 fontsize=16, fontweight="bold", color=TEXT_COLOR, y=0.98)
-
-    # Panel 1: Latency comparison
-    x = np.arange(len(wl_names))
-    width = 0.3
-    for i, (tn, offset) in enumerate([("Torus 4x4x4", -width/2), ("6D Hypercube", width/2)]):
-        vals = [entries[(wl, tn)][1]["total_latency"] * 1e3 for wl in wl_names]
-        ax1.bar(x + offset, vals, width * 0.9, label=tn,
-                color=COLORS[tn], edgecolor="white", linewidth=1.5, zorder=3)
-    style_ax(ax1, "Network Latency Comparison", "Latency (ms)")
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(wl_short, fontsize=10)
-    ax1.legend(frameon=True, facecolor="white", edgecolor="#DDDDDD", fontsize=10)
-    ax1.yaxis.set_major_formatter(ticker.FuncFormatter(lambda v, _: f"{v:,.0f}"))
-
-    # Panel 2: Speedup bars
-    speedups = []
-    for wl in wl_names:
-        torus_lat = entries[(wl, "Torus 4x4x4")][1]["total_latency"]
-        hyper_lat = entries[(wl, "6D Hypercube")][1]["total_latency"]
-        speedups.append(torus_lat / hyper_lat if hyper_lat > 0 else 0)
-
-    bars = ax2.bar(x, speedups, 0.5, color=COLORS["6D Hypercube"],
-                   edgecolor="white", linewidth=2, zorder=3)
-    ax2.axhline(y=1.0, color="#999999", linestyle="--", linewidth=1, alpha=0.5, zorder=2)
-    for bar, v in zip(bars, speedups):
-        ax2.text(bar.get_x() + bar.get_width()/2, v + 0.02,
-                 f"{v:.2f}×", ha="center", fontsize=11, fontweight="bold", color=TEXT_COLOR)
-    style_ax(ax2, "6D Hypercube Speedup over Torus 4×4×4", "Speedup")
-    ax2.set_xticks(x)
-    ax2.set_xticklabels(wl_short, fontsize=10)
-    ax2.set_ylim(0, max(speedups) * 1.3 if speedups else 2)
-
-    plt.tight_layout(rect=[0, 0, 1, 0.92])
-    path = out_dir / "9_6d_hypercube_advantage.png"
     fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
     plt.close(fig)
     print(f"  Saved {path}")
@@ -867,7 +823,6 @@ def main():
     fig_torus_aspect(entries, out_dir)
     fig_gpt3_stress(out_dir)
     fig_summary(entries, out_dir)
-    fig_6d_advantage(entries, out_dir)
 
     print(f"\nDone! {len(list(out_dir.glob('*.png')))} figures saved to {out_dir}/")
 

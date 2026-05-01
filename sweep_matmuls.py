@@ -134,6 +134,9 @@ MATMUL_12524857_WORKLOADS = [
     ("Rect 64Kx128K", 65536, 131072),
 ]
 BATCHED_MATMUL_BATCH_SIZES = (256, 512, 1024)
+TALL_SWEEP_N_VALUES = (4096, 16384, 65536, 262144)
+TALL_SWEEP_K_VALUES = (2048, 4096)
+TALL_SWEEP_BATCH_SIZES = (1, 16, 256)
 
 TOPOLOGIES = {
     "Torus 4x4x4": Torus3D(dims=(4, 4, 4), **hw),
@@ -162,6 +165,51 @@ def _json_ready(value):
         return value
     # Fallback for AccelForge's custom types (Float, etc.) — stringify
     return str(value)
+
+
+def _dim_label(value: int) -> str:
+    if value >= 1024 and value % 1024 == 0:
+        return f"{value // 1024}K"
+    return str(value)
+
+
+def _tall_sweep_workloads(matmul_template: Path, batched_matmul_template: Path):
+    workloads = []
+    for batch_size in TALL_SWEEP_BATCH_SIZES:
+        for n_size in TALL_SWEEP_N_VALUES:
+            for k_size in TALL_SWEEP_K_VALUES:
+                desc = (
+                    f"Tall B{batch_size} "
+                    f"N{_dim_label(n_size)}x{_dim_label(k_size)}"
+                )
+                if batch_size == 1:
+                    workloads.append(
+                        (
+                            desc,
+                            matmul_template,
+                            {
+                                "N_EINSUMS": 1,
+                                "M": n_size,
+                                "KN": k_size,
+                                "__tall_sweep_batch_size": batch_size,
+                            },
+                        )
+                    )
+                else:
+                    workloads.append(
+                        (
+                            desc,
+                            batched_matmul_template,
+                            {
+                                "N_EINSUMS": 1,
+                                "BATCH_SIZE": batch_size,
+                                "M": n_size,
+                                "KN": k_size,
+                                "__tall_sweep_batch_size": batch_size,
+                            },
+                        )
+                    )
+    return workloads
 
 
 def _serialize_transfer(transfer: NetworkTransfer):
@@ -1357,6 +1405,10 @@ def make_workloads(workloads_dir: Path):
             for batch_size in BATCHED_MATMUL_BATCH_SIZES
             for name, m_size, kn_size in MATMUL_12524857_WORKLOADS
         ],
+
+        # === Tall-shape sweep: B=1 uses the ordinary 2D matmul template; larger
+        # batches use an explicit leading batch rank. ===
+        *_tall_sweep_workloads(matmul_template, batched_matmul_template),
 
         # === Smaller matmuls for faster debugging/sanity sweeps ===
         ("Small 2Kx8K", matmul_template,

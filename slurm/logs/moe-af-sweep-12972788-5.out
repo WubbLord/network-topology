@@ -1,0 +1,38 @@
+========================================
+Task 5: workload='MoE ExpertFFN E16 T256' topology='Mesh 4x4x4'
+Run dir: /home/nvemuri/projects/network-topology/logs/slurm-moe-map64-rerun-20260501-160133
+Node: node3112, CPUs: 16, Mem: 24576
+Start: Fri May  1 16:11:34 EDT 2026
+========================================
+ACCELFORGE_ROOT=/home/nvemuri/projects/network-topology/.venv/lib/python3.12/site-packages
+Using 16 parallel jobs
+========================================================================================================================
+Topology Sweep: 1 workloads x 1 topologies (map=64 chips, eval=64 chips, independent collective costs, iterative feedback, damping=off)
+========================================================================================================================
+
+Topology            Diam  AvgHop  Degree   BisectBW
+--------------------------------------------------
+Mesh 4x4x4             9    3.81   3-6       2.16 TB/s
+
+Workload: MoE ExpertFFN E16 T256
+  Mesh 4x4x4         mapping+feedback... done (234s, 2 iters, converged)
+
+
+========================================================================================================================
+RESULTS (latency in ms, summed independent collective costs)
+========================================================================================================================
+                    Workload      Bytes     AG%     Mesh 4x4x4       Best      Worst  Speedup
+----------------------------------------------------------------------------------------------------------------------------------
+      MoE ExpertFFN E16 T256   4.03e+08      0%            n/a          9.0ms            n/a            n/a            n/a            n/a            n/a            n/a       Mesh       Mesh    1.00x
+
+========================================================================================================================
+INSIGHTS
+========================================================================================================================
+Torus 4x4x4 wins: 0/1 workloads
+
+Saved results to /home/nvemuri/projects/network-topology/logs/slurm-moe-map64-rerun-20260501-160133/MoE_ExpertFFN_E16_T256__Mesh_4x4x4.json
+
+Done!
+========================================
+Finished: Fri May  1 16:15:35 EDT 2026
+========================================

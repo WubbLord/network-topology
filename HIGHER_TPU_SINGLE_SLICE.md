@@ -34,8 +34,9 @@ Run:
 
 ```bash
 .venv/bin/python analyze_higher_tpu_circulants.py \
+  --scenario single-slice64 \
   --out-dir logs/higher_tpu_single_slice_circulants_20260501 \
-  --samples 64
+  --samples 128
 ```
 
 Generated files are in `logs/higher_tpu_single_slice_circulants_20260501/`.
@@ -74,4 +75,3 @@ Official docs used: <https://docs.cloud.google.com/tpu/docs/v4>,
 <https://docs.cloud.google.com/tpu/docs/v6e>,
 <https://docs.cloud.google.com/tpu/docs/v5p>, and
 <https://docs.cloud.google.com/tpu/docs/tpu7x>.
-

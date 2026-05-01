@@ -63,9 +63,9 @@ ARRAY_JOB=$(sbatch --parsable \
     --partition=mit_normal \
     --time=06:00:00 \
     --cpus-per-task=8 \
-    --mem=64G \
+    --mem=16G \
     --chdir="$LOGDIR" \
-    --array="0-15%1" \
+    --array="0-15%4" \
     --export=ALL,PROJECT_DIR="${PROJECT_DIR}",RUN_DIR="${RUN_DIR}" \
     slurm/sweep_moe_accelforge.sbatch)
 

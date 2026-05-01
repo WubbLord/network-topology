@@ -492,6 +492,20 @@ def _comparison_transfer_bytes(raw_bytes, tensor_size_bytes):
     return float(tensor_size_bytes * SCALE)
 
 
+def _effective_transfer_bytes_for_tensor(tensor_name, raw_bytes, tensor_size_bytes):
+    if tensor_name in tensor_size_bytes:
+        return _effective_transfer_bytes(raw_bytes, tensor_size_bytes[tensor_name])
+    return float(raw_bytes)
+
+
+def _comparison_transfer_bytes_for_tensor(tensor_name, raw_bytes, tensor_size_bytes):
+    if raw_bytes > 0:
+        return float(raw_bytes)
+    if tensor_name in tensor_size_bytes:
+        return float(tensor_size_bytes[tensor_name] * SCALE)
+    return 0.0
+
+
 def _initial_network_proxies():
     return {
         "NETWORK_READ_ENERGY": DEFAULT_NETWORK_READ_ENERGY,
@@ -1210,9 +1224,10 @@ def _infer_matmul_collectives(einsum_name, tensor_infos, read_bytes, write_bytes
             if output["chip_sharded_ranks"] & output_ranks
             else CollectiveType.ALLREDUCE
         )
-        data_bytes = _effective_transfer_bytes(
+        data_bytes = _effective_transfer_bytes_for_tensor(
+            output["name"],
             write_bytes[output["name"]],
-            tensor_size_bytes[output["name"]],
+            tensor_size_bytes,
         )
         decisions.append(
             _make_collective_decision(
@@ -1231,9 +1246,10 @@ def _infer_matmul_collectives(einsum_name, tensor_infos, read_bytes, write_bytes
 
     if bool(left_contracting) ^ bool(right_contracting):
         gathered = left if left_contracting else right
-        data_bytes = _effective_transfer_bytes(
+        data_bytes = _effective_transfer_bytes_for_tensor(
+            gathered["name"],
             read_bytes[gathered["name"]],
-            tensor_size_bytes[gathered["name"]],
+            tensor_size_bytes,
         )
         decisions.append(
             _make_collective_decision(
@@ -1253,14 +1269,16 @@ def _infer_matmul_collectives(einsum_name, tensor_infos, read_bytes, write_bytes
     if left_noncontracting and right_noncontracting:
         gathered = min(
             (left, right),
-            key=lambda info: _comparison_transfer_bytes(
+            key=lambda info: _comparison_transfer_bytes_for_tensor(
+                info["name"],
                 read_bytes[info["name"]],
-                tensor_size_bytes[info["name"]],
+                tensor_size_bytes,
             ),
         )
-        data_bytes = _effective_transfer_bytes(
+        data_bytes = _effective_transfer_bytes_for_tensor(
+            gathered["name"],
             read_bytes[gathered["name"]],
-            tensor_size_bytes[gathered["name"]],
+            tensor_size_bytes,
         )
         decisions.append(
             _make_collective_decision(

@@ -75,9 +75,11 @@ sbatch \
 | `slurm/sweep_batched_matmuls.sbatch` | Runs one batched workload/topology pair per array task. | 8 CPUs, 64 GB, 6 hours per task. | One partial JSON per workload/topology. |
 | `slurm/submit_large_map64.sbatch` | Wrapper for the four large matmul workloads with `MAP_CHIPS=64` and `EVAL_CHIPS=64`. Uses workload array indices `28-43`, corresponding to `Square 128Kx128K`, `Tall 256Kx64K`, `LargeSquare 256Kx256K`, and `VeryTall 256Kx8K` across the 4 core topologies. | Submit wrapper: 1 CPU, 1 GB, 5 min. Array: 16 CPUs, 128 GB, 12 hours per task, `28-43%1`. | `logs/slurm-large-map64-<submit_job>/results.json` |
 | `slurm/submit_gpt3_175b.sbatch` | Slurm wrapper for the GPT-3 175B sweep. Submits array tasks for the 4 core topologies and an aggregate dependency. | Submit wrapper: 1 CPU, 1 GB, 5 min. Array override: 4 CPUs, 8 GB, 2 hours. |
+| `slurm/submit_gpt3_175b_map64.sbatch` | Full-chip GPT-3 175B sweep with `MAP_CHIPS=64` and `EVAL_CHIPS=64`. | Submit wrapper: 1 CPU, 1 GB, 5 min. Array: 32 CPUs, 96 GB, 12 hours per topology, `0-3%1`. |
 | `slurm/sweep_gpt3_175b.sbatch` | Runs GPT-3 175B on one topology per array task. | Default headers: 4 CPUs, 8 GB, 2 hours. | `logs/slurm-gpt3-175b-<submit_job>/` |
 | `slurm/sweep_moe.sbatch` | Runs the synthetic MoE sweep on the CPU partition. | 1 CPU, 4 GB, 15 minutes on `mit_normal`. | `logs/slurm-moe-<job>/moe_results.json` |
 | `slurm/submit_moe_accelforge.sbatch` | Wrapper for AccelForge-backed MoE expert-FFN approximation workloads. | Submit wrapper: 1 CPU, 1 GB, 5 min. Array: 8 CPUs, 16 GB, 6 hours per task, `0-15%4`. | `logs/slurm-moe-accelforge-<submit_job>/results.json` |
+| `slurm/submit_moe_accelforge_map64.sbatch` | Full-chip AccelForge-backed MoE expert-FFN approximation with `MAP_CHIPS=64` and `EVAL_CHIPS=64`. | Submit wrapper: 1 CPU, 1 GB, 5 min. Array: 32 CPUs, 96 GB, 12 hours per workload/topology, `0-15%1`. | `logs/slurm-moe-map64-<submit_job>/results.json` |
 | `slurm/sweep_moe_accelforge.sbatch` | Runs one MoE expert-FFN workload/topology pair per array task through `sweep_matmuls.py`. | 8 CPUs, 16 GB, 6 hours per task when submitted through the wrapper. | One partial JSON per workload/topology. |
 | `slurm/aggregate.sbatch` | Merges partial JSON files after an array job succeeds. | 1 CPU, 4 GB, 5 min. | Writes `results.json` and usually `milestone2_analysis.json`. |
 

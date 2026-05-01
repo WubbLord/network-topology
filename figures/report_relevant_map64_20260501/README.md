@@ -1,8 +1,8 @@
-# Report-Relevant Figures, 2026-05-01
+# Mixed Reference Figure Bundle, 2026-05-01
 
-This folder collects the figures most relevant to the current report draft.
-It is intentionally grouped by provenance so full AccelForge MAP64 runs are not
-mixed with synthetic/reference plots.
+This folder collects both AccelForge MAP64 figures and synthetic/reference
+figures. For an AccelForge-only report, use
+`figures/report_accelforge_only_map64_20260501/` instead.
 
 ## Full AccelForge MAP64 Runs
 

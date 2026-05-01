@@ -134,6 +134,7 @@ MATMUL_12524857_WORKLOADS = [
     ("Rect 64Kx128K", 65536, 131072),
 ]
 BATCHED_MATMUL_BATCH_SIZES = (256, 512, 1024)
+MOE_EXPERT_FFN_TOKENS_PER_EXPERT = (64, 256, 1024, 4096)
 
 TOPOLOGIES = {
     "Torus 4x4x4": Torus3D(dims=(4, 4, 4), **hw),
@@ -1329,6 +1330,7 @@ def load_accelforge(accelforge_root: Path):
 def make_workloads(workloads_dir: Path):
     matmul_template = workloads_dir / "matmuls.yaml"
     batched_matmul_template = SCRIPT_DIR / "workloads" / "batched_matmuls.yaml"
+    moe_expert_ffn_template = SCRIPT_DIR / "workloads" / "moe_expert_ffn.yaml"
     return [
         # === AccelForge transformer workload templates ===
         (
@@ -1390,6 +1392,24 @@ def make_workloads(workloads_dir: Path):
         # Very tall: T0=69GB, W0=0.5GB, T1=69GB → activation-dominated
         ("VeryTall 256Kx8K", matmul_template,
          {"N_EINSUMS": 1, "M": 262144, "KN": 8192}),
+
+        # === AccelForge-backed MoE expert-MLP approximation ===
+        # This maps dense expert FFN compute with explicit expert and token ranks.
+        # Sparse top-k token dispatch/combine is not represented inside AccelForge;
+        # use sweep_moe.py only for the separate synthetic dispatch model.
+        *[
+            (
+                f"MoE ExpertFFN E16 T{tokens_per_expert}",
+                moe_expert_ffn_template,
+                {
+                    "N_EXPERTS": 16,
+                    "TOKENS_PER_EXPERT": tokens_per_expert,
+                    "HIDDEN_DIM": 12288,
+                    "FFN_DIM": 49152,
+                },
+            )
+            for tokens_per_expert in MOE_EXPERT_FFN_TOKENS_PER_EXPERT
+        ],
     ]
 
 

@@ -1,0 +1,28 @@
+workload:
+  iteration_space_shape:
+    {% set N_EXPERTS = N_EXPERTS | default(16) %}
+    {% set TOKENS_PER_EXPERT = TOKENS_PER_EXPERT | default(1024) %}
+    {% set HIDDEN_DIM = HIDDEN_DIM | default(12288) %}
+    {% set FFN_DIM = FFN_DIM | default(49152) %}
+    e: 0 <= e < {{N_EXPERTS}}
+    t: 0 <= t < {{TOKENS_PER_EXPERT}}
+    h: 0 <= h < {{HIDDEN_DIM}}
+    f: 0 <= f < {{FFN_DIM}}
+
+  bits_per_value: {All: 8}
+  persistent_tensors: weight - Intermediates
+
+  einsums:
+  - name: ExpertUp
+    tensor_accesses:
+    - {name: X, projection: [e, t, h]}
+    - {name: Wup, projection: [e, h, f]}
+    - {name: U, projection: [e, t, f], output: True}
+    renames: {weight: Wup, input: X, output: U}
+
+  - name: ExpertDown
+    tensor_accesses:
+    - {name: U, projection: [e, t, f]}
+    - {name: Wdown, projection: [e, f, h]}
+    - {name: Y, projection: [e, t, h], output: True}
+    renames: {weight: Wdown, input: U, output: Y}

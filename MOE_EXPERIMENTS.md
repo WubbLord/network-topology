@@ -4,6 +4,18 @@ Synthetic MoE experiments are run by `sweep_moe.py`. Unlike the AccelForge
 matmul/GPT-3 path, this path evaluates explicit 64-chip topologies directly and
 does not use the `MAP_CHIPS=8` scaling shortcut.
 
+For AccelForge-backed comparisons, `workloads/moe_expert_ffn.yaml` approximates
+the expert compute portion of a MoE layer as two dense expert-indexed FFN
+matmuls:
+
+- `ExpertUp`: `X[e,t,h] * Wup[e,h,f] -> U[e,t,f]`
+- `ExpertDown`: `U[e,t,f] * Wdown[e,f,h] -> Y[e,t,h]`
+
+Those workloads run through the same `sweep_matmuls.py` mapper, collective
+inference, topology replay, congestion model, and feedback loop as the matmul
+and decomposed GPT-3 experiments. Sparse top-k dispatch/combine remains covered
+only by the synthetic replay path below.
+
 ## Model
 
 Each MoE layer is modeled as two phase-synchronous sparse point-to-point phases:
@@ -82,3 +94,18 @@ amortized:
 The corresponding 3D torus efficiency rises from 5.80% to 5.91%, so the
 circulant maintains a higher useful payload efficiency across the whole batch
 sweep.
+
+## AccelForge Expert-FFN Run
+
+Command:
+
+```bash
+sbatch \
+  --chdir=/home/nvemuri/projects/network-topology/slurm/logs \
+  /home/nvemuri/projects/network-topology/slurm/submit_moe_accelforge.sbatch
+```
+
+This submits `MoE ExpertFFN E16 T{64,256,1024,4096}` across the four core
+topologies. Each task uses the same mapper-backed feedback loop as the matmul
+experiments. Results are expected at
+`logs/slurm-moe-accelforge-<submit_job>/results.json`.

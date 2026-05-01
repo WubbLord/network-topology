@@ -55,6 +55,14 @@ sbatch \
   /home/nvemuri/projects/network-topology/slurm/sweep_moe.sbatch
 ```
 
+AccelForge-backed MoE expert-FFN approximation:
+
+```bash
+sbatch \
+  --chdir=/home/nvemuri/projects/network-topology/slurm/logs \
+  /home/nvemuri/projects/network-topology/slurm/submit_moe_accelforge.sbatch
+```
+
 ## Scripts
 
 | Script | Purpose | Resources | Output location |
@@ -69,6 +77,8 @@ sbatch \
 | `slurm/submit_gpt3_175b.sbatch` | Slurm wrapper for the GPT-3 175B sweep. Submits array tasks for the 4 core topologies and an aggregate dependency. | Submit wrapper: 1 CPU, 1 GB, 5 min. Array override: 4 CPUs, 8 GB, 2 hours. |
 | `slurm/sweep_gpt3_175b.sbatch` | Runs GPT-3 175B on one topology per array task. | Default headers: 4 CPUs, 8 GB, 2 hours. | `logs/slurm-gpt3-175b-<submit_job>/` |
 | `slurm/sweep_moe.sbatch` | Runs the synthetic MoE sweep on the CPU partition. | 1 CPU, 4 GB, 15 minutes on `mit_normal`. | `logs/slurm-moe-<job>/moe_results.json` |
+| `slurm/submit_moe_accelforge.sbatch` | Wrapper for AccelForge-backed MoE expert-FFN approximation workloads. | Submit wrapper: 1 CPU, 1 GB, 5 min. Array: 8 CPUs, 64 GB, 6 hours per task, `0-15%2`. | `logs/slurm-moe-accelforge-<submit_job>/results.json` |
+| `slurm/sweep_moe_accelforge.sbatch` | Runs one MoE expert-FFN workload/topology pair per array task through `sweep_matmuls.py`. | 8 CPUs, 64 GB, 6 hours per task. | One partial JSON per workload/topology. |
 | `slurm/aggregate.sbatch` | Merges partial JSON files after an array job succeeds. | 1 CPU, 4 GB, 5 min. | Writes `results.json` and usually `milestone2_analysis.json`. |
 
 ## Workloads

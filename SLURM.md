@@ -103,6 +103,19 @@ different chips, then compare `clustered`, `spread`, and `topology_aware`
 expert placement. Dispatch and combine are costed as two concurrent
 point-to-point phases.
 
+Unlike the AccelForge matmul/GPT-3 sweeps, this synthetic MoE sweep evaluates
+explicit 64-chip topologies directly; there is no 8-chip-to-64-chip scaling
+shortcut. For the full baseline plus batch-scaling experiment, request a larger
+CPU allocation and let the script use the Slurm CPU count:
+
+```bash
+sbatch --partition=mit_quicktest --cpus-per-task=32 --mem=64G --time=00:15:00 \
+  --export=ALL,PROJECT_DIR=/home/nvemuri/projects/network-topology \
+  --chdir=/home/nvemuri/projects/network-topology/slurm/logs \
+  /home/nvemuri/projects/network-topology/slurm/sweep_moe.sbatch \
+  --experiment all --all-topologies --jobs 32
+```
+
 MoE figures can be generated from a completed run with:
 
 ```bash

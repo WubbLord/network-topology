@@ -13,8 +13,10 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 import time
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -71,6 +73,7 @@ class MoeWorkload:
     top_k: int = 2
     local_fraction: float = 0.75
     output_scale: float = 1.0
+    experiment: str = "baseline"
 
     @property
     def token_bytes(self) -> int:
@@ -120,6 +123,23 @@ DEFAULT_WORKLOADS = (
         local_fraction=0.85,
     ),
 )
+
+BATCH_SCALING_TOKENS_PER_CHIP = (64, 128, 256, 512, 1024, 2048, 4096, 8192)
+
+
+def make_batch_scaling_workloads() -> tuple[MoeWorkload, ...]:
+    return tuple(
+        MoeWorkload(
+            name=f"MoE batch T{tokens_per_chip} E16 top2",
+            num_experts=16,
+            tokens_per_chip=tokens_per_chip,
+            hidden_size=12288,
+            top_k=2,
+            local_fraction=0.75,
+            experiment="batch_scaling",
+        )
+        for tokens_per_chip in BATCH_SCALING_TOKENS_PER_CHIP
+    )
 
 
 def _json_ready(value):
@@ -438,6 +458,33 @@ def evaluate_moe_workload(
         for expert, source_bytes in expert_sources.items()
     }
     busiest_phase = max(network_result.per_phase, key=lambda phase: phase["latency"])
+    remote_payload_bytes = (
+        traffic_summary["remote_dispatch_bytes"] + traffic_summary["remote_combine_bytes"]
+    )
+    logical_payload_bytes = traffic_summary["logical_dispatch_bytes"] * (
+        1.0 + workload.output_scale
+    )
+    payload_throughput_bytes_per_s = (
+        remote_payload_bytes / network_result.total_latency
+        if network_result.total_latency > 0
+        else 0.0
+    )
+    logical_throughput_bytes_per_s = (
+        logical_payload_bytes / network_result.total_latency
+        if network_result.total_latency > 0
+        else 0.0
+    )
+    token_throughput_per_s = (
+        workload.num_chips * workload.tokens_per_chip / network_result.total_latency
+        if network_result.total_latency > 0
+        else 0.0
+    )
+    aggregate_directed_link_bandwidth = topology.total_links * topology.link_bandwidth
+    payload_link_efficiency = (
+        payload_throughput_bytes_per_s / aggregate_directed_link_bandwidth
+        if aggregate_directed_link_bandwidth > 0
+        else 0.0
+    )
 
     return {
         "workload": asdict(workload),
@@ -455,10 +502,27 @@ def evaluate_moe_workload(
         "total_network_bytes": float(network_result.total_network_bytes),
         "energy_per_network_access": float(network_result.energy_per_network_access),
         "latency_per_network_access": float(network_result.latency_per_network_access),
+        "remote_payload_bytes": float(remote_payload_bytes),
+        "logical_payload_bytes": float(logical_payload_bytes),
+        "payload_throughput_bytes_per_s": float(payload_throughput_bytes_per_s),
+        "logical_throughput_bytes_per_s": float(logical_throughput_bytes_per_s),
+        "token_throughput_per_s": float(token_throughput_per_s),
+        "aggregate_directed_link_bandwidth": float(aggregate_directed_link_bandwidth),
+        "payload_link_efficiency": float(payload_link_efficiency),
         "per_phase": network_result.per_phase,
         "busiest_phase": busiest_phase["phase"],
         "busiest_phase_latency": float(busiest_phase["latency"]),
     }
+
+
+def _evaluate_task(task: tuple[MoeWorkload, str, str]) -> dict:
+    workload, topology_name, placement_strategy = task
+    return evaluate_moe_workload(
+        workload,
+        topology_name,
+        TOPOLOGIES[topology_name],
+        placement_strategy,
+    )
 
 
 def parse_args():
@@ -488,6 +552,23 @@ def parse_args():
         help="Include every topology instead of the core four.",
     )
     parser.add_argument(
+        "--experiment",
+        choices=("baseline", "batch_scaling", "all"),
+        default="baseline",
+        help="Select the baseline MoE cases, batch-scaling cases, or both.",
+    )
+    parser.add_argument(
+        "--batch-sweep",
+        action="store_true",
+        help="Shortcut for --experiment batch_scaling.",
+    )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=max(1, int(os.environ.get("SLURM_CPUS_PER_TASK", "1"))),
+        help="Parallel worker processes. Defaults to SLURM_CPUS_PER_TASK or 1.",
+    )
+    parser.add_argument(
         "--run-dir",
         type=str,
         default=None,
@@ -496,8 +577,13 @@ def parse_args():
     return parser.parse_args()
 
 
-def _select_workloads(workload_filter: str | None) -> list[MoeWorkload]:
-    workloads = list(DEFAULT_WORKLOADS)
+def _select_workloads(workload_filter: str | None, experiment: str) -> list[MoeWorkload]:
+    workloads = []
+    if experiment in ("baseline", "all"):
+        workloads.extend(DEFAULT_WORKLOADS)
+    if experiment in ("batch_scaling", "all"):
+        workloads.extend(make_batch_scaling_workloads())
+
     if workload_filter:
         workloads = [
             workload for workload in workloads
@@ -539,41 +625,56 @@ def _select_topologies(topology_filters: list[str] | None, all_topologies: bool)
 
 def main() -> None:
     args = parse_args()
-    workloads = _select_workloads(args.workload)
+    experiment = "batch_scaling" if args.batch_sweep else args.experiment
+    workloads = _select_workloads(args.workload, experiment)
     topologies = _select_topologies(args.topology, args.all_topologies)
     placements = args.placement or list(PLACEMENT_STRATEGIES)
+    jobs = max(1, args.jobs)
     run_dir = Path(args.run_dir) if args.run_dir else make_run_dir()
     run_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 110)
     print(
         f"MoE Sweep: {len(workloads)} workloads x {len(topologies)} topologies "
-        f"x {len(placements)} placements"
+        f"x {len(placements)} placements, experiment={experiment}, jobs={jobs}"
     )
     print("=" * 110)
     print(
         f"{'Workload':>22s} {'Topology':>20s} {'Placement':>15s} "
-        f"{'Bytes':>10s} {'Remote':>8s} {'Latency':>12s} {'Energy':>12s}"
+        f"{'Bytes':>10s} {'Remote':>8s} {'Latency':>12s} {'Eff':>8s}"
     )
     print("-" * 110)
 
     results = []
     t0 = time.time()
-    for workload in workloads:
-        for topology_name, topology in topologies.items():
-            for placement in placements:
-                result = evaluate_moe_workload(
-                    workload, topology_name, topology, placement
-                )
-                results.append(result)
-                traffic = result["traffic_summary"]
-                print(
-                    f"{workload.name:>22s} {topology_name:>20s} {placement:>15s} "
-                    f"{result['total_network_bytes']:>10.2e} "
-                    f"{100.0 * traffic['remote_dispatch_fraction']:>7.1f}% "
-                    f"{result['total_latency'] * 1e3:>10.2f}ms "
-                    f"{result['total_energy']:>12.4e}"
-                )
+    tasks = [
+        (workload, topology_name, placement)
+        for workload in workloads
+        for topology_name in topologies
+        for placement in placements
+    ]
+
+    if jobs == 1:
+        result_iter = map(_evaluate_task, tasks)
+    else:
+        executor = ProcessPoolExecutor(max_workers=jobs)
+        result_iter = executor.map(_evaluate_task, tasks, chunksize=1)
+
+    try:
+        for result in result_iter:
+            results.append(result)
+            traffic = result["traffic_summary"]
+            print(
+                f"{result['workload']['name']:>22s} {result['topology']:>20s} "
+                f"{result['placement_strategy']:>15s} "
+                f"{result['total_network_bytes']:>10.2e} "
+                f"{100.0 * traffic['remote_dispatch_fraction']:>7.1f}% "
+                f"{result['total_latency'] * 1e3:>10.2f}ms "
+                f"{100.0 * result['payload_link_efficiency']:>7.3f}%"
+            )
+    finally:
+        if jobs != 1:
+            executor.shutdown()
 
     best_by_workload_topology = {}
     grouped = defaultdict(list)
@@ -604,6 +705,15 @@ def main() -> None:
     payload = {
         "run_timestamp": datetime.now().astimezone().isoformat(),
         "elapsed_s": float(time.time() - t0),
+        "experiment": experiment,
+        "jobs": jobs,
+        "chip_model": {
+            "num_chips": 64,
+            "note": (
+                "Synthetic MoE evaluates explicit 64-chip topologies directly. "
+                "It does not use the AccelForge MAP_CHIPS=8 scaling shortcut."
+            ),
+        },
         "methodology": {
             "model": "Synthetic MoE token dispatch/combine",
             "traffic": (

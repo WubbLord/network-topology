@@ -172,8 +172,21 @@ For each workload, the sweep compares three expert placements:
 - `topology_aware`: starts from clustered, spread, and hop-greedy seeds, then
   runs a small exact-latency local search using the topology cost model
 
+The synthetic MoE path evaluates explicit 64-chip topology graphs directly. It
+does not use the AccelForge `MAP_CHIPS=8` shortcut from the matmul/GPT-3 flow.
+To study batch effects, use `--experiment batch_scaling` or `--experiment all`;
+the batch-scaling cases sweep `tokens_per_chip` from 64 through 8192 and report
+remote-payload throughput plus payload link efficiency.
+
 ```bash
 .venv/bin/python sweep_moe.py
+```
+
+Run the full baseline plus batch-scaling sweep over all topologies with parallel
+workers:
+
+```bash
+.venv/bin/python sweep_moe.py --experiment all --all-topologies --jobs 32
 ```
 
 On MIT ORCD/Engaging, submit the CPU Slurm wrapper:
@@ -183,11 +196,25 @@ sbatch --chdir=/home/nvemuri/projects/network-topology/slurm/logs \
   /home/nvemuri/projects/network-topology/slurm/sweep_moe.sbatch
 ```
 
+The wrapper defaults to `mit_normal`, but the request can be strengthened from
+the submit command:
+
+```bash
+sbatch --partition=mit_quicktest --cpus-per-task=32 --mem=64G --time=00:15:00 \
+  --export=ALL,PROJECT_DIR=/home/nvemuri/projects/network-topology \
+  --chdir=/home/nvemuri/projects/network-topology/slurm/logs \
+  /home/nvemuri/projects/network-topology/slurm/sweep_moe.sbatch \
+  --experiment all --all-topologies --jobs 32
+```
+
 Plot a completed MoE run with:
 
 ```bash
 .venv/bin/python plot_moe_results.py logs/slurm-moe-12790884
 ```
+
+See `MOE_EXPERIMENTS.md` for the full-64-chip MoE run notes and report-ready
+tables.
 
 ## Running Tests
 

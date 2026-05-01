@@ -7,6 +7,7 @@ from sweep_moe import (
     build_moe_phases,
     evaluate_moe_workload,
     expert_source_bytes,
+    make_batch_scaling_workloads,
     place_experts,
     placement_hop_objective,
 )
@@ -112,3 +113,15 @@ def test_moe_evaluation_accounts_for_dispatch_and_combine_bytes():
     assert traffic["remote_combine_bytes"] == 3.0
     assert result["total_network_bytes"] == 6.0
     assert [phase["phase"] for phase in result["per_phase"]] == ["dispatch", "combine"]
+    assert result["payload_throughput_bytes_per_s"] > 0
+    assert result["payload_link_efficiency"] > 0
+
+
+def test_batch_scaling_workloads_are_full_chip_and_monotonic():
+    workloads = make_batch_scaling_workloads()
+
+    assert [workload.tokens_per_chip for workload in workloads] == sorted(
+        workload.tokens_per_chip for workload in workloads
+    )
+    assert all(workload.num_chips == 64 for workload in workloads)
+    assert all(workload.experiment == "batch_scaling" for workload in workloads)

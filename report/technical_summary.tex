@@ -1,0 +1,46 @@
+\setcounter{section}{0}
+\renewcommand{\thesection}{\Roman{section}}
+
+\begin{center}
+{\LARGE\bfseries Impact of Network Topology on Distributed Inference:\\
+Circulant Graphs as a Replacement for 3D Torus\par}
+\vspace{1.0em}
+\begin{tabular}{cc}
+Nikhil Vemuri & Brian Zhang \\
+\texttt{nvemuri@mit.edu} & \texttt{zhangbr@mit.edu}
+\end{tabular}
+\end{center}
+\vspace{1.0em}
+
+\section{Key Insights and Innovations}
+This project couples AccelForge mapping with a topology-aware replay model for
+64-chip accelerator inference. The central design insight is that
+$C(64,\{1,5,17\})$ preserves the six-link-per-chip budget of a TPU-v4-like 3D
+torus while decomposing into three edge-disjoint Hamiltonian cycles, which
+spreads full-chip reductions over independent rings. This lowers the predicted
+AllReduce and ReduceScatter bottleneck load by about $2.29\times$ relative to
+the torus dimension-wise schedule.
+
+Across the evaluated small, tall, square, and MoE expert-FFN workloads, the
+circulant graph wins every case. The results show that serialization
+bottlenecks, not first-byte latency, dominate these communication-heavy
+mappings. The feedback loop also converges in two iterations in the evaluated
+runs, suggesting that topology mainly changes the cost of a stable collective
+plan for these workloads.
+
+\section{Contributions}
+Nikhil Vemuri and Brian Zhang jointly designed the topology study, developed
+the AccelForge-to-network replay workflow, ran the matmul and MoE experiments,
+analyzed the resulting latency and energy trends, and wrote the final report.
+Nikhil focused on topology modeling, collective routing, and MoE workload
+analysis. Brian focused on AccelForge integration, feedback-loop evaluation,
+result aggregation, figure generation, and report assembly.
+
+\section{Artifact}
+The project artifact is the repository
+\texttt{https://github.com/WubbLord/network-topology}. The main report is
+\texttt{report/main.tex}; the technical summary is this file,
+\texttt{report/technical\_summary.tex}. Experiment scripts, workload
+definitions, result summaries, and report figures are organized under
+\texttt{sweep\_matmuls.py}, \texttt{sweep\_moe.py}, \texttt{workloads/},
+\texttt{figures/}, and \texttt{report/figs/}.

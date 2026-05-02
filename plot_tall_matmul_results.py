@@ -180,36 +180,33 @@ def generate_standard_figures(rows: list[dict], out_dir: Path) -> None:
     if not entries:
         return
 
-    from plot_results import (
-        fig_energy_breakdown,
-        fig_gpt3_stress,
-        fig_latency_breakdown,
-        fig_summary,
-        fig_topologies,
-        fig_torus_aspect,
-        fig_workloads,
-    )
+    import plot_results
 
-    fig_workloads(out_dir, entries)
-    fig_topologies(out_dir)
-    plot_latency_comparison_by_batch(rows, out_dir)
-    plot_standard_figure_by_batch(
-        rows,
-        out_dir,
-        fig_energy_breakdown,
-        "4_energy_breakdown.png",
-        "4_energy_breakdown_B{batch}.png",
-    )
-    plot_standard_figure_by_batch(
-        rows,
-        out_dir,
-        fig_latency_breakdown,
-        "5_latency_breakdown.png",
-        "5_latency_breakdown_B{batch}.png",
-    )
-    fig_torus_aspect(entries, out_dir)
-    fig_gpt3_stress(out_dir)
-    fig_summary(entries, out_dir)
+    old_show_titles = getattr(plot_results, "SHOW_FIGURE_TITLES", True)
+    plot_results.SHOW_FIGURE_TITLES = False
+    try:
+        plot_results.fig_workloads(out_dir, entries)
+        plot_results.fig_topologies(out_dir)
+        plot_latency_comparison_by_batch(rows, out_dir)
+        plot_standard_figure_by_batch(
+            rows,
+            out_dir,
+            plot_results.fig_energy_breakdown,
+            "4_energy_breakdown.png",
+            "4_energy_breakdown_B{batch}.png",
+        )
+        plot_standard_figure_by_batch(
+            rows,
+            out_dir,
+            plot_results.fig_latency_breakdown,
+            "5_latency_breakdown.png",
+            "5_latency_breakdown_B{batch}.png",
+        )
+        plot_results.fig_torus_aspect(entries, out_dir)
+        plot_results.fig_gpt3_stress(out_dir)
+        plot_results.fig_summary(entries, out_dir)
+    finally:
+        plot_results.SHOW_FIGURE_TITLES = old_show_titles
 
 
 def plot_standard_figure_by_batch(
@@ -289,15 +286,7 @@ def plot_latency_comparison_by_batch(rows: list[dict], out_dir: Path) -> list[Pa
                 zorder=3,
             )
 
-        batch_label = "B1" if batch == 1 else f"B{batch}"
         ax.set_facecolor("#FAFAFA")
-        ax.set_title(
-            f"Network Latency by Workload and Topology ({batch_label})",
-            fontsize=13,
-            fontweight="bold",
-            color=TEXT_COLOR,
-            pad=12,
-        )
         ax.set_ylabel("Network Latency (ms)", fontsize=11, color=TEXT_COLOR)
         ax.set_xticks(x)
         ax.set_xticklabels(
@@ -322,6 +311,85 @@ def plot_latency_comparison_by_batch(rows: list[dict], out_dir: Path) -> list[Pa
         fig.tight_layout()
 
         path = out_dir / f"3_latency_comparison_B{batch}.png"
+        fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
+        plt.close(fig)
+        print(f"  Saved {path}")
+        paths.append(path)
+    return paths
+
+
+def plot_network_energy_comparison_by_batch(rows: list[dict], out_dir: Path) -> list[Path]:
+    paths = []
+    for batch in BATCH_ORDER:
+        batch_rows = [row for row in rows if row["batch_size"] == batch]
+        if not batch_rows:
+            continue
+
+        workloads = [
+            (batch, n_size, k_size)
+            for n_size in N_ORDER
+            for k_size in K_ORDER
+            if any(row["n_size"] == n_size and row["k_size"] == k_size for row in batch_rows)
+        ]
+        topologies = [
+            topology
+            for topology in TOPOLOGY_ORDER
+            if any(row["topology"] == topology for row in batch_rows)
+        ]
+        if not workloads or len(topologies) < 2:
+            continue
+
+        fig, ax = plt.subplots(figsize=(max(12, 1.9 * len(workloads)), 6))
+        fig.patch.set_facecolor("white")
+        x = np.arange(len(workloads))
+        width = min(0.15, 0.8 / len(topologies))
+        offsets = np.arange(len(topologies)) - (len(topologies) - 1) / 2
+        lookup = {
+            (row["n_size"], row["k_size"], row["topology"]): row
+            for row in batch_rows
+        }
+
+        for i, topology in enumerate(topologies):
+            values = [
+                lookup.get((n_size, k_size, topology), {}).get("total_energy", 0.0)
+                for _, n_size, k_size in workloads
+            ]
+            ax.bar(
+                x + offsets[i] * width,
+                values,
+                width * 0.9,
+                label=topology,
+                color=TOPOLOGY_COLORS.get(topology, "#CCCCCC"),
+                edgecolor="white",
+                linewidth=1.5,
+                zorder=3,
+            )
+
+        ax.set_facecolor("#FAFAFA")
+        ax.set_ylabel("Network Energy (J)", fontsize=11, color=TEXT_COLOR)
+        ax.set_xticks(x)
+        ax.set_xticklabels(
+            [_shape_label(n_size, k_size) for _, n_size, k_size in workloads],
+            fontsize=10,
+        )
+        ax.grid(axis="y", color=GRID_COLOR, linewidth=0.8, zorder=0)
+        ax.spines["top"].set_visible(False)
+        ax.spines["right"].set_visible(False)
+        ax.spines["left"].set_color("#CCCCCC")
+        ax.spines["bottom"].set_color("#CCCCCC")
+        ax.tick_params(colors=TEXT_COLOR, labelsize=10)
+        ax.legend(
+            frameon=True,
+            facecolor="white",
+            edgecolor="#DDDDDD",
+            fontsize=10,
+            loc="upper left",
+            ncol=min(len(topologies), 4),
+        )
+        ax.yaxis.set_major_formatter(lambda value, _: f"{value:,.2g}")
+        fig.tight_layout()
+
+        path = out_dir / f"13_network_energy_comparison_B{batch}.png"
         fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
         plt.close(fig)
         print(f"  Saved {path}")
@@ -406,8 +474,7 @@ def _heatmap(rows: list[dict], out_dir: Path, metric: str, title: str, filename:
                         fontweight="bold",
                         color=_text_color(float(value), norm, cmap),
                     )
-    fig.suptitle(title, fontsize=15, fontweight="bold", y=0.985)
-    fig.subplots_adjust(left=0.12, right=0.88, bottom=0.06, top=0.92, wspace=0.04)
+    fig.subplots_adjust(left=0.12, right=0.88, bottom=0.06, top=0.97, wspace=0.04)
     cax = fig.add_axes([0.90, 0.18, 0.018, 0.62])
     cbar = fig.colorbar(image, cax=cax)
     cbar.set_label("seconds, log scale" if "latency" in metric else "joules, log scale")
@@ -470,8 +537,7 @@ def plot_batch_scaling(
         ax.axis("off")
     handles, labels = axes.flat[0].get_legend_handles_labels()
     fig.legend(handles, labels, ncol=4, frameon=False, loc="lower center")
-    fig.suptitle(title, fontsize=15, fontweight="bold")
-    fig.tight_layout(rect=[0, 0.05, 1, 0.95])
+    fig.tight_layout(rect=[0, 0.05, 1, 1])
     path = out_dir / filename
     fig.savefig(path, dpi=220, bbox_inches="tight", facecolor="white")
     plt.close(fig)
@@ -593,6 +659,7 @@ def main() -> None:
         map_dir = out_dir / f"map{map_chips}"
         map_dir.mkdir(parents=True, exist_ok=True)
         generate_standard_figures(map_rows, map_dir)
+        paths.extend(plot_network_energy_comparison_by_batch(map_rows, map_dir))
         paths.extend(
             [
                 _heatmap(

@@ -43,6 +43,7 @@ NETWORK_COLOR = "#F4A7A0"  # soft coral
 BG_COLOR      = "#FAFAFA"
 GRID_COLOR    = "#E8E8E8"
 TEXT_COLOR     = "#333333"
+SHOW_FIGURE_TITLES = True
 
 TOPO_ORDER = ["Circulant {1,5,17}", "Torus 4x4x4", "4D Torus 4x4x2x2", "Mesh 4x4x4", "Ring 64"]
 TOPO_SHORT = {"Circulant {1,5,17}": "Circulant\n{1,5,17}",
@@ -52,7 +53,7 @@ TOPO_SHORT = {"Circulant {1,5,17}": "Circulant\n{1,5,17}",
               "Ring 64": "Ring\n64",
               "5D Torus 4x2x2x2x2": "5D Torus\n4×2⁴"}
 
-def style_ax(ax, title=None, ylabel=None, xlabel=None):
+def style_ax(ax, title=None, ylabel=None, xlabel=None, title_is_figure=False):
     """Apply clean styling to an axis."""
     ax.set_facecolor(BG_COLOR)
     ax.spines["top"].set_visible(False)
@@ -61,7 +62,7 @@ def style_ax(ax, title=None, ylabel=None, xlabel=None):
     ax.spines["bottom"].set_color("#CCCCCC")
     ax.tick_params(colors=TEXT_COLOR, labelsize=10)
     ax.grid(axis="y", color=GRID_COLOR, linewidth=0.8, zorder=0)
-    if title:
+    if title and (SHOW_FIGURE_TITLES or not title_is_figure):
         ax.set_title(title, fontsize=13, fontweight="bold", color=TEXT_COLOR, pad=12)
     if ylabel:
         ax.set_ylabel(ylabel, fontsize=11, color=TEXT_COLOR)
@@ -261,7 +262,8 @@ def fig_workloads(out_dir, entries=None):
     nrows = (len(workloads) + ncols - 1) // ncols
     fig, axes = plt.subplots(nrows, ncols, figsize=(18, 3.5 * nrows))
     fig.patch.set_facecolor("white")
-    fig.suptitle("Workloads Tested", fontsize=16, fontweight="bold", color=TEXT_COLOR, y=0.98)
+    if SHOW_FIGURE_TITLES:
+        fig.suptitle("Workloads Tested", fontsize=16, fontweight="bold", color=TEXT_COLOR, y=0.98)
 
     flat_axes = axes.flatten()
     for i, (label, dims, color) in enumerate(workloads):
@@ -287,7 +289,7 @@ def fig_workloads(out_dir, entries=None):
     for j in range(len(workloads), nrows * ncols):
         flat_axes[j].set_visible(False)
 
-    plt.tight_layout(rect=[0, 0, 1, 0.92])
+    plt.tight_layout(rect=[0, 0, 1, 0.92 if SHOW_FIGURE_TITLES else 1])
     path = out_dir / "1_workloads.png"
     fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
     plt.close(fig)
@@ -311,8 +313,9 @@ def fig_topologies(out_dir):
 
     fig, axes = plt.subplots(1, 3, figsize=(15, 5))
     fig.patch.set_facecolor("white")
-    fig.suptitle("Network Topology Properties (64 chips)", fontsize=16,
-                 fontweight="bold", color=TEXT_COLOR, y=0.98)
+    if SHOW_FIGURE_TITLES:
+        fig.suptitle("Network Topology Properties (64 chips)", fontsize=16,
+                     fontweight="bold", color=TEXT_COLOR, y=0.98)
 
     names = list(TOPO_ORDER)
     short_names = [TOPO_SHORT[n] for n in names]
@@ -342,7 +345,7 @@ def fig_topologies(out_dir):
         axes[2].text(bar.get_x() + bar.get_width()/2, v + 0.03, f"{v:.2f}",
                      ha="center", fontsize=10, fontweight="bold", color=TEXT_COLOR)
 
-    plt.tight_layout(rect=[0, 0, 1, 0.92])
+    plt.tight_layout(rect=[0, 0, 1, 0.92 if SHOW_FIGURE_TITLES else 1])
     path = out_dir / "2_topologies.png"
     fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
     plt.close(fig)
@@ -387,8 +390,12 @@ def fig_latency_comparison(entries, out_dir):
         ax.bar(x + offsets[i] * width, vals, width * 0.9, label=tn,
                color=COLORS.get(tn, "#CCCCCC"), edgecolor="white", linewidth=1.5, zorder=3)
 
-    style_ax(ax, "Network Latency by Workload and Topology",
-             "Network Latency (ms)")
+    style_ax(
+        ax,
+        "Network Latency by Workload and Topology",
+        "Network Latency (ms)",
+        title_is_figure=True,
+    )
     ax.set_xticks(x)
     ax.set_xticklabels(wl_labels, fontsize=10)
     ax.legend(frameon=True, facecolor="white", edgecolor="#DDDDDD", fontsize=10,
@@ -414,8 +421,9 @@ def fig_energy_breakdown(entries, out_dir):
     nrows = (len(workloads) + ncols - 1) // ncols
     fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 5.5 * nrows), sharey=False)
     fig.patch.set_facecolor("white")
-    fig.suptitle("Energy Breakdown: Compute vs Network", fontsize=16,
-                 fontweight="bold", color=TEXT_COLOR, y=0.98)
+    if SHOW_FIGURE_TITLES:
+        fig.suptitle("Energy Breakdown: Compute vs Network", fontsize=16,
+                     fontweight="bold", color=TEXT_COLOR, y=0.98)
 
     flat_axes = np.atleast_1d(axes).flatten() if nrows > 1 or ncols > 1 else [axes]
 
@@ -459,7 +467,7 @@ def fig_energy_breakdown(entries, out_dir):
     fig.text(0.5, 0.01, "Percentages show network share of total energy",
              ha="center", fontsize=10, color="#888888", style="italic")
 
-    plt.tight_layout(rect=[0, 0.04, 1, 0.92])
+    plt.tight_layout(rect=[0, 0.04, 1, 0.92 if SHOW_FIGURE_TITLES else 1])
     path = out_dir / "4_energy_breakdown.png"
     fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
     plt.close(fig)
@@ -504,7 +512,12 @@ def fig_latency_breakdown(entries, out_dir):
         ax.text(total + total * 0.01, i, f" {net_pct:.0f}% net",
                 va="center", fontsize=8, color="#888888")
 
-    style_ax(ax, "Latency Breakdown: Compute vs Network", "Total Latency (s)")
+    style_ax(
+        ax,
+        "Latency Breakdown: Compute vs Network",
+        "Total Latency (s)",
+        title_is_figure=True,
+    )
     ax.set_yticks(y)
     ax.set_yticklabels(labels, fontsize=9)
     ax.set_xlabel("Latency (seconds)", fontsize=11, color=TEXT_COLOR)
@@ -556,8 +569,12 @@ def fig_torus_aspect(entries, out_dir):
                 ax.text(bar.get_x() + bar.get_width()/2, v + 0.01,
                         f"{v:.2f}×", ha="center", fontsize=8, color=TEXT_COLOR, fontweight="bold")
 
-    style_ax(ax, "Torus Aspect Ratio Impact on Latency",
-             "Latency (normalized to 4×4×4 cube)")
+    style_ax(
+        ax,
+        "Torus Aspect Ratio Impact on Latency",
+        "Latency (normalized to 4×4×4 cube)",
+        title_is_figure=True,
+    )
     ax.set_xticks(x)
     ax.set_xticklabels(wl_short, fontsize=10)
     ax.axhline(y=1.0, color="#999999", linestyle="--", linewidth=1, zorder=2, alpha=0.5)
@@ -599,8 +616,9 @@ def fig_gpt3_stress(out_dir):
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 5.5), sharey=False)
     fig.patch.set_facecolor("white")
-    fig.suptitle("GPT-3 Network Latency by Model Size and Scenario",
-                 fontsize=16, fontweight="bold", color=TEXT_COLOR, y=0.98)
+    if SHOW_FIGURE_TITLES:
+        fig.suptitle("GPT-3 Network Latency by Model Size and Scenario",
+                     fontsize=16, fontweight="bold", color=TEXT_COLOR, y=0.98)
 
     gpt_colors = {"Circulant {1,5,17}": COLORS["Circulant {1,5,17}"],
                   "Torus 4x4x4": COLORS["Torus 4x4x4"],
@@ -634,7 +652,7 @@ def fig_gpt3_stress(out_dir):
         ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda v, _: f"{v:,.0f}"))
 
     axes[0].legend(frameon=True, facecolor="white", edgecolor="#DDDDDD", fontsize=10)
-    plt.tight_layout(rect=[0, 0, 1, 0.92])
+    plt.tight_layout(rect=[0, 0, 1, 0.92 if SHOW_FIGURE_TITLES else 1])
     path = out_dir / "7_gpt3_stress.png"
     fig.savefig(path, dpi=150, bbox_inches="tight", facecolor="white")
     plt.close(fig)
@@ -652,11 +670,14 @@ def fig_summary(entries, out_dir):
 
     fig = plt.figure(figsize=(max(16, 0.75 * n_wl), 10))
     fig.patch.set_facecolor("white")
-    fig.suptitle("Network Topology Impact — Summary Dashboard",
-                 fontsize=18, fontweight="bold", color=TEXT_COLOR, y=0.97)
+    if SHOW_FIGURE_TITLES:
+        fig.suptitle("Network Topology Impact — Summary Dashboard",
+                     fontsize=18, fontweight="bold", color=TEXT_COLOR, y=0.97)
 
     gs = fig.add_gridspec(2, 3, hspace=0.35, wspace=0.3,
-                          left=0.06, right=0.97, top=0.90, bottom=0.06)
+                          left=0.06, right=0.97,
+                          top=0.90 if SHOW_FIGURE_TITLES else 0.96,
+                          bottom=0.06)
 
     # --- Panel 1: Winner summary ---
     ax1 = fig.add_subplot(gs[0, 0])

@@ -1,0 +1,17 @@
+workload:
+  iteration_space_shape:
+    {% set N = N | default(128) %}
+    {% set T = T | default(128) %}
+    n: 0 <= n < {{N}}
+    k: 0 <= k < {{N}}
+    t: 0 <= t < {{T}}
+
+  bits_per_value: {All: 8}
+
+  einsums:
+  - name: SquareMatmul0
+    tensor_accesses:
+    - {name: A0, projection: [n, k]}
+    - {name: B0, projection: [k, t]}
+    - {name: C0, projection: [n, t], output: True}
+    renames: {input: A0, weight: B0, output: C0}

@@ -134,9 +134,12 @@ MATMUL_12524857_WORKLOADS = [
     ("Rect 64Kx128K", 65536, 131072),
 ]
 BATCHED_MATMUL_BATCH_SIZES = (256, 512, 1024)
+SMALL_BATCHED_EXTRA_BATCH_SIZES = (16,)
 TALL_SWEEP_N_VALUES = (4096, 16384, 65536, 262144)
 TALL_SWEEP_K_VALUES = (2048, 4096)
 TALL_SWEEP_BATCH_SIZES = (1, 16, 256)
+SQUARE_SWEEP_N_VALUES = (4096, 16384, 65536, 262144)
+SQUARE_SWEEP_T_VALUES = (2048, 4096)
 
 TOPOLOGIES = {
     "Torus 4x4x4": Torus3D(dims=(4, 4, 4), **hw),
@@ -209,6 +212,23 @@ def _tall_sweep_workloads(matmul_template: Path, batched_matmul_template: Path):
                             },
                         )
                     )
+    return workloads
+
+
+def _square_sweep_workloads(square_matmul_template: Path):
+    workloads = []
+    for n_size in SQUARE_SWEEP_N_VALUES:
+        for t_size in SQUARE_SWEEP_T_VALUES:
+            workloads.append(
+                (
+                    f"Square {_dim_label(n_size)}x{_dim_label(t_size)}",
+                    square_matmul_template,
+                    {
+                        "N": n_size,
+                        "T": t_size,
+                    },
+                )
+            )
     return workloads
 
 
@@ -1377,6 +1397,7 @@ def load_accelforge(accelforge_root: Path):
 def make_workloads(workloads_dir: Path):
     matmul_template = workloads_dir / "matmuls.yaml"
     batched_matmul_template = SCRIPT_DIR / "workloads" / "batched_matmuls.yaml"
+    square_matmul_template = SCRIPT_DIR / "workloads" / "square_matmuls.yaml"
     return [
         # === AccelForge transformer workload templates ===
         (
@@ -1405,10 +1426,27 @@ def make_workloads(workloads_dir: Path):
             for batch_size in BATCHED_MATMUL_BATCH_SIZES
             for name, m_size, kn_size in MATMUL_12524857_WORKLOADS
         ],
+        *[
+            (
+                f"Batched B{batch_size} {name}",
+                batched_matmul_template,
+                {
+                    "N_EINSUMS": 1,
+                    "BATCH_SIZE": batch_size,
+                    "M": m_size,
+                    "KN": kn_size,
+                },
+            )
+            for batch_size in SMALL_BATCHED_EXTRA_BATCH_SIZES
+            for name, m_size, kn_size in MATMUL_12524857_WORKLOADS[:2]
+        ],
 
         # === Tall-shape sweep: B=1 uses the ordinary 2D matmul template; larger
         # batches use an explicit leading batch rank. ===
         *_tall_sweep_workloads(matmul_template, batched_matmul_template),
+
+        # === Attention-prefill-like square-left matmuls: (N,N) x (N,T). ===
+        *_square_sweep_workloads(square_matmul_template),
 
         # === Smaller matmuls for faster debugging/sanity sweeps ===
         ("Small 2Kx8K", matmul_template,

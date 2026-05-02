@@ -32,15 +32,11 @@ plan for these workloads.
 Nikhil Vemuri and Brian Zhang jointly designed the topology study, developed
 the AccelForge-to-network replay workflow, ran the matmul and MoE experiments,
 analyzed the resulting latency and energy trends, and wrote the final report.
-Nikhil focused on topology modeling, collective routing, and MoE workload
-analysis. Brian focused on AccelForge integration, feedback-loop evaluation,
-result aggregation, figure generation, and report assembly.
+Nikhil focused on topology modeling, collective routing, and MoE and full architecture workload
+experiments. Brian focused on AccelForge integration, congestion and latency modeling, and matmul workload experiments.
 
 \section{Artifact}
 The project artifact is the repository
 \texttt{https://github.com/WubbLord/network-topology}. The main report is
 \texttt{report/main.tex}; the technical summary is this file,
-\texttt{report/technical\_summary.tex}. Experiment scripts, workload
-definitions, result summaries, and report figures are organized under
-\texttt{sweep\_matmuls.py}, \texttt{sweep\_moe.py}, \texttt{workloads/},
-\texttt{figures/}, and \texttt{report/figs/}.
+\texttt{report/technical\_summary.tex}.

@@ -391,6 +391,112 @@ def fig_workload_setup(data, out_dir: Path) -> Path:
     return path
 
 
+def _placement_for_batch(result_entries):
+    topology_aware = [
+        result
+        for result in result_entries
+        if result["placement_strategy"] == "topology_aware"
+    ]
+    if topology_aware:
+        return topology_aware[0]
+    return min(result_entries, key=lambda result: result["total_latency"])
+
+
+def fig_batch_efficiency(data, out_dir: Path) -> Path | None:
+    results = [
+        result
+        for result in data["results"]
+        if result["workload"].get("experiment") == "batch_scaling"
+    ]
+    if not results:
+        return None
+
+    grouped = defaultdict(list)
+    for result in results:
+        grouped[(result["topology"], result["workload"]["tokens_per_chip"])].append(result)
+
+    topologies = _ordered_topologies(results)
+    tokens_per_chip = sorted(
+        {result["workload"]["tokens_per_chip"] for result in results}
+    )
+    selected = {
+        (topology, tokens): _placement_for_batch(grouped[(topology, tokens)])
+        for topology in topologies
+        for tokens in tokens_per_chip
+        if (topology, tokens) in grouped
+    }
+
+    fig, axes = plt.subplots(1, 2, figsize=(15, 5.2))
+    fig.patch.set_facecolor("white")
+    fig.suptitle(
+        "Full-64-Chip MoE Batch Scaling",
+        fontsize=16,
+        fontweight="bold",
+        color=TEXT_COLOR,
+        y=1.02,
+    )
+
+    colors = {
+        "Circulant {1,5,17}": "#7B4CC2",
+        "Torus 4x4x4": "#4E79A7",
+        "Mesh 4x4x4": "#D45A5A",
+        "Ring 64": "#B58500",
+        "6D Hypercube": "#59A14F",
+        "4D Torus 4x4x2x2": "#76B7B2",
+        "5D Torus 4x2x2x2x2": "#AF7AA1",
+        "Torus 8x2x4": "#9C755F",
+    }
+
+    for topology in topologies:
+        xs = [
+            tokens for tokens in tokens_per_chip
+            if (topology, tokens) in selected
+        ]
+        efficiencies = [
+            100.0 * selected[(topology, tokens)]["payload_link_efficiency"]
+            for tokens in xs
+        ]
+        throughputs = [
+            selected[(topology, tokens)]["payload_throughput_bytes_per_s"] / 1e9
+            for tokens in xs
+        ]
+        label = TOPOLOGY_LABELS.get(topology, topology).replace("\n", " ")
+        axes[0].plot(
+            xs,
+            efficiencies,
+            marker="o",
+            linewidth=2.2,
+            color=colors.get(topology),
+            label=label,
+        )
+        axes[1].plot(
+            xs,
+            throughputs,
+            marker="o",
+            linewidth=2.2,
+            color=colors.get(topology),
+            label=label,
+        )
+
+    for ax in axes:
+        ax.set_xscale("log", base=2)
+        ax.set_xticks(tokens_per_chip)
+        ax.set_xticklabels([str(tokens) for tokens in tokens_per_chip], rotation=30)
+        _style_ax(ax, xlabel="Tokens per chip")
+
+    _style_ax(axes[0], ylabel="Payload link efficiency (%)")
+    axes[0].set_title("Efficiency Rises As Batch Amortizes Hop Latency", fontweight="bold")
+    _style_ax(axes[1], ylabel="Remote payload throughput (GB/s)")
+    axes[1].set_title("Circulant Sustains The Highest Useful Throughput", fontweight="bold")
+    axes[1].legend(loc="best", frameon=False, fontsize=8)
+
+    fig.tight_layout()
+    path = out_dir / "5_moe_batch_efficiency.png"
+    fig.savefig(path, dpi=220, bbox_inches="tight", facecolor="white")
+    plt.close(fig)
+    return path
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Plot synthetic MoE sweep results.")
     parser.add_argument("results", type=Path, help="MoE run directory or moe_results.json")
@@ -415,6 +521,9 @@ def main() -> None:
         fig_phase_breakdown(data, out_dir),
         fig_workload_setup(data, out_dir),
     ]
+    batch_efficiency = fig_batch_efficiency(data, out_dir)
+    if batch_efficiency is not None:
+        written.append(batch_efficiency)
     print(f"Wrote {len(written)} MoE figures to {out_dir}")
     for path in written:
         print(path)

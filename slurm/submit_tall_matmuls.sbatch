@@ -55,22 +55,12 @@ resolve_project_dir() {
 PROJECT_DIR="$(resolve_project_dir)"
 LOGDIR="${PROJECT_DIR}/slurm/logs"
 RUN_ROOT="${PROJECT_DIR}/logs/slurm-tall-matmuls-${SLURM_JOB_ID}"
-mkdir -p "$LOGDIR" "$RUN_ROOT/map8" "$RUN_ROOT/map64"
+mkdir -p "$LOGDIR" "$RUN_ROOT/map64"
 
 cd "$PROJECT_DIR"
 
-# 3 batch settings x 4 N values x 2 K values x 4 topologies = 96 tasks per MAP_CHIPS setting.
+# 3 batch settings x 4 N values x 2 K values x 4 topologies = 96 tasks.
 ARRAY_RANGE="0-95"
-
-ARRAY_MAP8=$(sbatch --parsable \
-    --partition=mit_normal \
-    --time=06:00:00 \
-    --cpus-per-task=8 \
-    --mem=64G \
-    --chdir="$LOGDIR" \
-    --array="${ARRAY_RANGE}%2" \
-    --export=ALL,PROJECT_DIR="${PROJECT_DIR}",RUN_ROOT="${RUN_ROOT}",MAP_CHIPS=8,EVAL_CHIPS=64 \
-    slurm/sweep_tall_matmuls.sbatch)
 
 ARRAY_MAP64=$(sbatch --parsable \
     --partition=mit_normal \
@@ -81,16 +71,6 @@ ARRAY_MAP64=$(sbatch --parsable \
     --array="${ARRAY_RANGE}%1" \
     --export=ALL,PROJECT_DIR="${PROJECT_DIR}",RUN_ROOT="${RUN_ROOT}",MAP_CHIPS=64,EVAL_CHIPS=64 \
     slurm/sweep_tall_matmuls.sbatch)
-
-AGG_MAP8=$(sbatch --parsable \
-    --partition=mit_normal \
-    --time=00:05:00 \
-    --cpus-per-task=1 \
-    --mem=4G \
-    --chdir="$LOGDIR" \
-    --dependency="afterok:${ARRAY_MAP8}" \
-    --export=ALL,PROJECT_DIR="${PROJECT_DIR}",RUN_DIR="${RUN_ROOT}/map8" \
-    slurm/aggregate.sbatch)
 
 AGG_MAP64=$(sbatch --parsable \
     --partition=mit_normal \
@@ -108,18 +88,15 @@ PLOT_JOB=$(sbatch --parsable \
     --cpus-per-task=1 \
     --mem=8G \
     --chdir="$LOGDIR" \
-    --dependency="afterok:${AGG_MAP8}:${AGG_MAP64}" \
+    --dependency="afterok:${AGG_MAP64}" \
     --export=ALL,PROJECT_DIR="${PROJECT_DIR}",RUN_ROOT="${RUN_ROOT}" \
     slurm/plot_tall_matmuls.sbatch)
 
-echo "Tall matmul MAP_CHIPS=8 array submitted:  $ARRAY_MAP8"
 echo "Tall matmul MAP_CHIPS=64 array submitted: $ARRAY_MAP64"
-echo "MAP8 aggregation job:  $AGG_MAP8"
 echo "MAP64 aggregation job: $AGG_MAP64"
 echo "Figure/summary job:    $PLOT_JOB"
 echo "Results root: ${RUN_ROOT}"
 echo "Expected aggregates:"
-echo "  ${RUN_ROOT}/map8/results.json"
 echo "  ${RUN_ROOT}/map64/results.json"
 echo "Figures:"
 echo "  ${RUN_ROOT}/figures/"

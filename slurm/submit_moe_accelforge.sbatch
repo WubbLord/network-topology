@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH -J submit-mm-rerun
-#SBATCH -p mit_normal
+#SBATCH -J submit-moe-af
+#SBATCH -p mit_quicktest
 #SBATCH -c 1
 #SBATCH --mem=1G
 #SBATCH -t 00:05:00
-#SBATCH -o submit-mm-rerun-%j.out
-#SBATCH -e submit-mm-rerun-%j.err
+#SBATCH -o submit-moe-af-%j.out
+#SBATCH -e submit-moe-af-%j.err
 
 set -euo pipefail
 
@@ -54,26 +54,48 @@ resolve_project_dir() {
 
 PROJECT_DIR="$(resolve_project_dir)"
 LOGDIR="${PROJECT_DIR}/slurm/logs"
-mkdir -p "$LOGDIR"
+RUN_DIR="${PROJECT_DIR}/logs/slurm-moe-accelforge-${SLURM_JOB_ID}"
+FIGURE_DIR="${PROJECT_DIR}/figures/current_moe_expert_ffn"
+mkdir -p "$LOGDIR" "$RUN_DIR" "$FIGURE_DIR"
 
 cd "$PROJECT_DIR"
 
 ARRAY_JOB=$(sbatch --parsable \
+    --partition=mit_normal \
+    --time=06:00:00 \
+    --cpus-per-task=8 \
+    --mem=16G \
     --chdir="$LOGDIR" \
-    --array="0-27%2" \
-    --export=ALL,PROJECT_DIR="${PROJECT_DIR}" \
-    slurm/sweep_array.sbatch)
-
-RUN_DIR="${PROJECT_DIR}/logs/slurm-${ARRAY_JOB}"
+    --array="0-15%4" \
+    --export=ALL,PROJECT_DIR="${PROJECT_DIR}",RUN_DIR="${RUN_DIR}" \
+    slurm/sweep_moe_accelforge.sbatch)
 
 AGG_JOB=$(sbatch --parsable \
+    --partition=mit_quicktest \
+    --time=00:05:00 \
+    --cpus-per-task=1 \
+    --mem=4G \
     --chdir="$LOGDIR" \
     --dependency="afterok:${ARRAY_JOB}" \
     --export=ALL,PROJECT_DIR="${PROJECT_DIR}",RUN_DIR="${RUN_DIR}" \
     slurm/aggregate.sbatch)
 
-echo "Unbatched matmul rerun array submitted: $ARRAY_JOB"
+PLOT_JOB=$(sbatch --parsable \
+    --partition=mit_quicktest \
+    --time=00:10:00 \
+    --cpus-per-task=1 \
+    --mem=8G \
+    --chdir="$LOGDIR" \
+    --dependency="afterok:${AGG_JOB}" \
+    --export=ALL,PROJECT_DIR="${PROJECT_DIR}",RUN_DIR="${RUN_DIR}",FIGURE_DIR="${FIGURE_DIR}" \
+    slurm/plot_moe_accelforge.sbatch)
+
+echo "AccelForge MoE expert-FFN topology array submitted: $ARRAY_JOB"
 echo "Aggregation job submitted: $AGG_JOB"
+echo "Figure job submitted: $PLOT_JOB"
 echo "Results will be in: ${RUN_DIR}/results.json"
+echo "Figures will be mirrored to: ${FIGURE_DIR}"
+echo "Workloads: MoE ExpertFFN E16 T{64,256,1024,4096}"
+echo "Topologies: Torus 4x4x4, Mesh 4x4x4, Ring 64, Circulant {1,5,17}"
 echo "Monitor: squeue -u \$USER"
-echo "Logs:    ${LOGDIR}/topo-sweep-${ARRAY_JOB}-<task>.out"
+echo "Logs:    ${LOGDIR}/moe-af-sweep-${ARRAY_JOB}-<task>.out"

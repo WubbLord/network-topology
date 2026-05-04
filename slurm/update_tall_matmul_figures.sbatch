@@ -31,12 +31,12 @@ for ((i=1; i<=MAX_UPDATES; i++)); do
     echo "[$(date)] Updating tall matmul figures (${i}/${MAX_UPDATES})"
     python3 plot_tall_matmul_results.py "$RUN_ROOT" --mirror-dir "$MIRROR_DIR"
 
-    if [ -f "$RUN_ROOT/map8/results.json" ] && [ -f "$RUN_ROOT/map64/results.json" ]; then
-        echo "[$(date)] Both aggregates exist; final update complete."
+    if [ -f "$RUN_ROOT/map64/results.json" ]; then
+        echo "[$(date)] MAP_CHIPS=64 aggregate exists; final update complete."
         exit 0
     fi
 
     sleep "$INTERVAL_SECONDS"
 done
 
-echo "[$(date)] Reached MAX_UPDATES before both aggregates appeared."
+echo "[$(date)] Reached MAX_UPDATES before the MAP_CHIPS=64 aggregate appeared."

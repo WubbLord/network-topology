@@ -1,11 +1,11 @@
 #!/bin/bash
-#SBATCH -J submit-batched-mm
-#SBATCH -p mit_normal
+#SBATCH -J submit-moe-map64
+#SBATCH -p mit_quicktest
 #SBATCH -c 1
 #SBATCH --mem=1G
 #SBATCH -t 00:05:00
-#SBATCH -o submit-batched-mm-%j.out
-#SBATCH -e submit-batched-mm-%j.err
+#SBATCH -o submit-moe-map64-%j.out
+#SBATCH -e submit-moe-map64-%j.err
 
 set -euo pipefail
 
@@ -54,20 +54,21 @@ resolve_project_dir() {
 
 PROJECT_DIR="$(resolve_project_dir)"
 LOGDIR="${PROJECT_DIR}/slurm/logs"
-RUN_DIR="${PROJECT_DIR}/logs/slurm-batched-matmuls-${SLURM_JOB_ID}"
-mkdir -p "$LOGDIR" "$RUN_DIR"
+RUN_DIR="${PROJECT_DIR}/logs/slurm-moe-map64-${SLURM_JOB_ID}"
+FIGURE_DIR="${PROJECT_DIR}/figures/current_moe_expert_ffn"
+mkdir -p "$LOGDIR" "$RUN_DIR" "$FIGURE_DIR"
 
 cd "$PROJECT_DIR"
 
 ARRAY_JOB=$(sbatch --parsable \
     --partition=mit_normal \
-    --time=06:00:00 \
-    --cpus-per-task=8 \
-    --mem=64G \
+    --time=12:00:00 \
+    --cpus-per-task=32 \
+    --mem=96G \
     --chdir="$LOGDIR" \
-    --array="0-83%2" \
-    --export=ALL,PROJECT_DIR="${PROJECT_DIR}",RUN_DIR="${RUN_DIR}" \
-    slurm/sweep_batched_matmuls.sbatch)
+    --array="0-15%1" \
+    --export=ALL,PROJECT_DIR="${PROJECT_DIR}",RUN_DIR="${RUN_DIR}",MAP_CHIPS=64,EVAL_CHIPS=64 \
+    slurm/sweep_moe_accelforge.sbatch)
 
 AGG_JOB=$(sbatch --parsable \
     --partition=mit_quicktest \
@@ -79,8 +80,22 @@ AGG_JOB=$(sbatch --parsable \
     --export=ALL,PROJECT_DIR="${PROJECT_DIR}",RUN_DIR="${RUN_DIR}" \
     slurm/aggregate.sbatch)
 
-echo "Batched matmul topology array submitted: $ARRAY_JOB"
+PLOT_JOB=$(sbatch --parsable \
+    --partition=mit_quicktest \
+    --time=00:10:00 \
+    --cpus-per-task=1 \
+    --mem=8G \
+    --chdir="$LOGDIR" \
+    --dependency="afterok:${AGG_JOB}" \
+    --export=ALL,PROJECT_DIR="${PROJECT_DIR}",RUN_DIR="${RUN_DIR}",FIGURE_DIR="${FIGURE_DIR}" \
+    slurm/plot_moe_accelforge.sbatch)
+
+echo "Full MAP_CHIPS=64 MoE expert-FFN array submitted: $ARRAY_JOB"
 echo "Aggregation job submitted: $AGG_JOB"
+echo "Figure job submitted: $PLOT_JOB"
 echo "Results will be in: ${RUN_DIR}/results.json"
+echo "Figures will be mirrored to: ${FIGURE_DIR}"
+echo "Workloads: MoE ExpertFFN E16 T{64,256,1024,4096}"
+echo "Topologies: Torus 4x4x4, Mesh 4x4x4, Ring 64, Circulant {1,5,17}"
 echo "Monitor: squeue -u \$USER"
-echo "Logs:    ${LOGDIR}/batched-mm-sweep-${ARRAY_JOB}-<task>.out"
+echo "Logs:    ${LOGDIR}/moe-af-sweep-${ARRAY_JOB}-<task>.out"

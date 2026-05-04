@@ -4,7 +4,7 @@
 #SBATCH -c 1                             # Lightweight aggregation
 #SBATCH --mem=4G
 #SBATCH -t 00:05:00                      # 5 minutes max
-# PROJECT_DIR and RUN_DIR are passed via --export from submit.sh
+# PROJECT_DIR and RUN_DIR are passed via --export from the submit wrapper.
 #SBATCH -o %x-%j.out
 #SBATCH -e %x-%j.err
 

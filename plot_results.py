@@ -54,7 +54,7 @@ TOPO_SHORT = {"Circulant {1,5,17}": "Circulant\n{1,5,17}",
               "5D Torus 4x2x2x2x2": "5D Torus\n4×2⁴"}
 
 def style_ax(ax, title=None, ylabel=None, xlabel=None, title_is_figure=False):
-    """Apply clean styling to an axis."""
+    """Apply base styling to an axis."""
     ax.set_facecolor(BG_COLOR)
     ax.spines["top"].set_visible(False)
     ax.spines["right"].set_visible(False)

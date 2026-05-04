@@ -1,9 +1,9 @@
 # Network Topology
 
 `network-topology` couples AccelForge mapping with an analytical inter-chip
-network model for 64-chip TPU-v4-like systems. The current cleaned tree keeps
-the core topology/cost pipeline, the workload drivers used for the active
-figure sets, and the Slurm wrappers needed to reproduce them on the cluster.
+network model for 64-chip TPU-v4-like systems. The repository contains the core
+topology/cost pipeline, workload drivers, figure generators, and Slurm wrappers
+needed to reproduce the experiments on the cluster.
 
 Do not run full experiments on the login node. Use the Slurm submit scripts in
 `slurm/`; local commands are only for static checks, plotting completed JSON, or
@@ -21,13 +21,22 @@ unit tests that do not launch mapper sweeps.
 | `plot_*_results.py` | Workload-specific figure generators. |
 | `workloads/` | YAML workload templates for local matmul and MoE expert-FFN sweeps. |
 | `accelforge_configs/` | TPU-v4-like AccelForge architecture config. |
-| `slurm/` | Submit, array-task, aggregate, and plot jobs for retained experiments. |
-| `figures/` | Current generated figure sets. |
+| `slurm/` | Submit, array-task, aggregate, and plot jobs for experiments. |
+| `figures/` | Generated figure sets. |
 | `report/` | Paper source and the figures included in the paper. |
 | `tests/` | Pytest coverage for topology/cost behavior and MoE helpers. |
 | `SLURM.md` | Job inventory, commands, output paths, and successful run log. |
-| `EXPERIMENTS.md` | Current experiment index and figure provenance. |
-| `MOE_EXPERIMENTS.md` | MoE-specific notes. |
+| `EXPERIMENTS.md` | Experiment index, figure provenance, findings, and MoE-specific notes. |
+
+## How To Use The Docs
+
+Start here in `README.md` for the model overview, setup, and the main
+experiment commands. Use the other markdown files for narrower questions:
+
+| File | Use it when you need |
+| --- | --- |
+| `SLURM.md` | Exact sbatch commands, Slurm script purposes, result directories, and successful job IDs. |
+| `EXPERIMENTS.md` | The experiment matrix, workload/topology definitions, main findings, figure provenance, and MoE experiment details. |
 
 ## Model Summary
 
@@ -65,7 +74,7 @@ The main paper compares four 64-chip topologies: `Ring 64`, `Mesh 4x4x4`,
 
 Mapper-backed sweeps run a proxy-feedback loop:
 
-1. Map the workload with the current logical network proxy.
+1. Map the workload with the input logical network proxy.
 2. Extract AccelForge `NetworkMemory` reads and writes.
 3. Infer broadcast, all-gather, reduce-scatter, or all-reduce collectives from
    tensor sharding and network actions.
@@ -116,7 +125,7 @@ sbatch --chdir="$PROJECT_DIR/slurm/logs" \
 See `SLURM.md` for the full script matrix, output directories, successful job
 IDs, and GPT-3/synthetic-MoE notes.
 
-## Active Figure Sets
+## Figure Sets
 
 | Figure directory | Source script |
 | --- | --- |
@@ -151,8 +160,6 @@ be reviewed, but `pdflatex` will not run locally.
 - The AccelForge adapter infers collectives from mapped tensor sharding and
   `NetworkMemory` actions. Richer communication patterns would need a richer
   adapter.
-- `MAP_CHIPS=64` is used for the current small, tall, and square paper runs.
-  Older `MAP_CHIPS=8` scaling artifacts were removed from the tracked figure
-  set during cleanup.
-- GPT-3 is retained as a decomposed-einsum study, but it is not one of the main
+- `MAP_CHIPS=64` is used for the small, tall, and square paper runs.
+- GPT-3 is included as a decomposed-einsum study, but it is not one of the main
   paper figure sources.

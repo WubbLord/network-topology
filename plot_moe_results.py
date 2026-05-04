@@ -54,8 +54,8 @@ TEXT_COLOR = "#222222"
 
 
 def _safe_path_part(value: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip())
-    return cleaned.strip("._-") or "unnamed"
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip())
+    return safe.strip("._-") or "unnamed"
 
 
 def _load_results(path: Path) -> tuple[dict, Path]:

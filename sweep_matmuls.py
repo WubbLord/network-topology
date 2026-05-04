@@ -419,8 +419,8 @@ def save_named_json_in_dir(out_dir: Path, filename: str, payload: dict) -> Path:
 
 
 def _safe_path_part(value: str) -> str:
-    cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip())
-    return cleaned.strip("._-") or "unnamed"
+    safe = re.sub(r"[^A-Za-z0-9._-]+", "_", value.strip())
+    return safe.strip("._-") or "unnamed"
 
 
 def _mapping_value_to_data(value):
@@ -1466,7 +1466,7 @@ def make_workloads(workloads_dir: Path):
         # === Attention-prefill-like square-left matmuls: (N,N) x (N,T). ===
         *_square_sweep_workloads(square_matmul_template),
 
-        # === Smaller matmuls for faster debugging/sanity sweeps ===
+        # === Smaller matmuls for quick sanity sweeps ===
         ("Small 2Kx8K", matmul_template,
          {"N_EINSUMS": 1, "M": 2048, "KN": 8192}),
         ("Small 4Kx16K", matmul_template,

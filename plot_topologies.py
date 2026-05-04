@@ -143,7 +143,7 @@ def draw_3d_topology(ax, nodes, edges, title, node_color, wrap_color=EDGE_WRAP,
     ax.set_title(title, fontsize=14, fontweight="bold", color=TEXT, pad=15)
     ax.view_init(elev=elev, azim=azim)
 
-    # Clean up axes
+    # Hide axes
     ax.set_xticklabels([])
     ax.set_yticklabels([])
     ax.set_zticklabels([])
